@@ -101,12 +101,97 @@ though it originates from [Artifact Hub](https://artifacthub.io/packages/helm/he
    ```
 
 ### Makefile support:
-This process is automated by following Makefile targets `helm_repo_add` and
-`hem_deploy`
+This process is automated by the Makefile targets `helm_repo_add` and
+`helm_deploy`
 ```
 make helm_repo_add
 make helm_deploy
 ```
 
+### Accessing OpenLDAP via Port-Forwarding
 
+Once OpenLDAP is deployed in the Kubernetes cluster, you can forward the LDAP 
+service port to your local machine to interact with it. By default, OpenLDAP 
+uses port **389** for LDAP, but since ports below **1024** require elevated 
+permissions, we will forward the service to port **5389** on your local machine.
 
+#### Port-Forwarding the OpenLDAP Service
+
+To forward the LDAP port to **5389** locally, run the following command:
+
+```
+kubectl port-forward svc/openldap 5389:389
+```
+
+## Generic LDIF-Applying Script
+
+The script `apply_ldif_files.py` allows you to apply multiple LDIF files in a 
+specified directory in a **bottom-up** order. This is particularly useful when 
+you have dependencies among your LDIF files, such as module loading or schema 
+extensions, which need to be applied before the main overlay or configuration.
+
+### Script Overview
+
+The script uses the following steps:
+
+1. **Load LDAP Configuration**: The LDAP configuration (such as server URL, bind 
+   DN, and password) is read from the `helx_ldap_config.yaml` file.
+   
+2. **Directory Traversal**: The script traverses the directory tree rooted at 
+   the provided directory in a bottom-up order (applying dependencies first).
+
+3. **Apply LDIF Files**: Each `.ldif` file in the directory tree is applied to 
+   the LDAP server using the `ldapmodify` command.
+
+## Enabling the `memberOf` Overlay in OpenLDAP
+
+The **`memberOf`** overlay in OpenLDAP provides automatic management of 
+group membership information in user entries. When the overlay is enabled, 
+any group membership changes (such as adding a user to a group) will 
+automatically reflect in the user's `memberOf` attribute, which lists all 
+groups the user is a member of.
+
+This functionality is particularly useful for environments that frequently 
+query group membership from the user entries, as it eliminates the need to 
+manually track which groups a user belongs to.
+
+## `memberOf` Overlay
+
+To enable the `memberOf` overlay, the following steps are required:
+
+1. **Load the `memberOf` Module**: The `memberof` module must be loaded into 
+   the OpenLDAP server to make the overlay available.
+   
+2. Apply the memberOf Overlay: After the module is loaded, the memberOf overlay
+   must be configured for the specific database where user and group entries
+   are stored. The overlay ensures that the memberOf attribute is automatically
+   maintained for any changes to group membership.
+
+### Makefile support
+
+This is automated using the `apply_memberof` target
+```
+make apply_memberof
+```
+
+## KubernetesSC Support
+
+The user definition (inetOrgUser) has been extended to also include a
+Kubernetes SecurityContext and PodSecurityContext indended to modify a
+pod on behalf of a user.  This is done with LDIF as well.
+
+### Applying Kubernetes SC LDIFs
+
+In addition to managing the `memberOf` overlay, the repository also includes 
+LDIF files related to Kubernetes service account configuration. These LDIF 
+files are located in the `ldif/kubernetesSC` directory and can be processed 
+using the same generic LDIF-applying script.
+
+### Makefile Support
+
+The `apply_kubernetes_sc` Makefile target automates the process of applying 
+these LDIF files. It uses the same generic script (`apply_ldif_files.py`) but 
+starts in the `ldif/kubernetesSC` directory.
+```
+make apply_kubernetes_sc
+```

@@ -30,6 +30,15 @@ helm_deploy: openldap_values.yaml
 	helm install openldap openldap/openldap-stack-ha -f openldap_values.yaml
 	@echo "OpenLDAP has been deployed."
 
+# Apply the memberOf overlay using the generated script
+apply_memberof:
+	@echo "Applying memberOf overlay..."
+	python3 scripts/apply_ldif_files.py ldif/memberof
+
+apply_kubernetes_sc:
+	@echo "Applying Kubernetes service account LDIFs..."
+	python3 scripts/apply_ldif_files.py ldif/kubernetesSC
+
 # Check if Python is installed
 check-python:
 	@if ! command -v $(PYTHON) &> /dev/null; then \
