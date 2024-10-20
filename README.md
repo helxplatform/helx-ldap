@@ -101,9 +101,12 @@ though it originates from [Artifact Hub](https://artifacthub.io/packages/helm/he
    ```
 
 ### Makefile support:
-This process is automated by the following Makefile targets
-. make helm_repo_add
-. make helm_deploy
+This process is automated by following Makefile targets `helm_repo_add` and
+`hem_deploy`
+```
+make helm_repo_add
+make helm_deploy
+```
 
 
 
