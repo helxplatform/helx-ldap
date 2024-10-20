@@ -74,7 +74,7 @@ though it originates from [Artifact Hub](https://artifacthub.io/packages/helm/he
 - The `openldap_values.yaml` file generated using the scripts provided in this 
   repository.
 
-#### Steps for Deployment:
+### Steps for Deployment:
 
 1. **Add the OpenLDAP Helm Repository**:
    Add the repository where the Helm chart is hosted:
@@ -99,6 +99,11 @@ though it originates from [Artifact Hub](https://artifacthub.io/packages/helm/he
    ```
    kubectl get pods
    ```
+
+### Makefile support:
+This process is automated by the following Makefile targets
+. make helm_repo_add
+. make helm_deploy
 
 
 

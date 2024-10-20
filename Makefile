@@ -17,6 +17,19 @@ openldap_values.yaml: helx_ldap_config.yaml scripts/generate_openldap_values.py
 	@echo "Generating openldap_values.yaml..."
 	scripts/generate_openldap_values.py
 
+# Add the OpenLDAP Helm repository
+helm_repo_add:
+	@echo "Adding the OpenLDAP Helm repository..."
+	helm repo add openldap https://jp-gouin.github.io/helm-openldap/
+	helm repo update
+	@echo "Helm repository added and updated."
+
+# Deploy OpenLDAP using the generated values file
+helm_deploy: openldap_values.yaml
+	@echo "Deploying OpenLDAP with Helm..."
+	helm install openldap openldap/openldap-stack-ha -f openldap_values.yaml
+	@echo "OpenLDAP has been deployed."
+
 # Check if Python is installed
 check-python:
 	@if ! command -v $(PYTHON) &> /dev/null; then \
@@ -33,6 +46,7 @@ install-deps:
 clean:
 	@echo "Cleaning up..."
 	@rm -f $(CONFIG_FILE)
+	@rm -f openldap_values.yaml
 
 # Phony targets
 .PHONY: all clean check-python install-deps
