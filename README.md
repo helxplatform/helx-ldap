@@ -1,4 +1,4 @@
-# HElX LDAP Repository
+# HELX LDAP Repository
 
 ## Overview
 This repository, named **helx-ldap**, contains scripts and configuration files for 
@@ -14,6 +14,95 @@ files necessary for the deployment and setup of OpenLDAP.
 - Example configuration files that can be customized and deployed.
 - Makefile for automating tasks such as generating configuration files and 
   deploying LDAP.
+
+## Quickstart
+
+Follow these steps to get the project up and running quickly using the provided 
+Makefile targets and default settings.
+
+### Prerequisites
+
+Ensure you have the following installed on your machine:
+
+- **Python 3.x**
+- **Helm** (for deploying OpenLDAP)
+- **kubectl** (for interacting with your Kubernetes cluster)
+
+### Step 1: Install Python Dependencies
+
+Use pip to install the required Python packages:
+
+```
+pip install -r requirements.txt
+```
+
+### Step 2: Deploy OpenLDAP with Helm
+
+Add the Helm repository and deploy OpenLDAP using the following Makefile 
+targets:
+
+```
+make helm_add  # Add the Helm repository for OpenLDAP
+make helm_deploy  # Deploy OpenLDAP to your Kubernetes cluster
+```
+
+### Step 3: Port-forward the OpenLDAP Service
+
+Port-forward the OpenLDAP service to your local machine on port 5389:
+
+```
+kubectl port-forward svc/openldap 5389:389
+```
+
+### Step 4: Apply LDAP Overlays and Extensions
+
+Run the following Makefile targets to set up the necessary LDAP extensions 
+and overlays:
+
+```
+make apply_memberof  # Apply the memberOf overlay to OpenLDAP
+make apply_kubernetes_sc  # Apply the Kubernetes security context overlay
+```
+
+### Step 5: List Existing LDAP Users
+
+You can list the existing LDAP users with the following script:
+
+```
+./scripts/get_ldap_users.py  # This will list all users using default settings
+```
+
+### Step 6: Set New LDAP Users
+
+To create new users from a YAML file, use the set_ldap_users.py script. 
+You can find an example YAML file under test/users.yaml.
+
+```
+./scripts/set_ldap_users.py test/users.yaml
+```
+
+### Step 7: Verify the New Users
+
+After setting new users, list them again to verify the users were created 
+successfully:
+
+```
+./scripts/get_ldap_users.py  # Verify that the new users have been added
+```
+
+### Summary of Steps
+
+1. Install dependencies: pip install -r requirements.txt
+2. Add the Helm repository: make helm_add
+3. Deploy OpenLDAP: make helm_deploy
+4. Port-forward OpenLDAP: kubectl port-forward svc/openldap 5389:389
+5. Apply the memberOf overlay: make apply_memberof
+6. Apply the Kubernetes SC overlay: make apply_kubernetes_sc
+7. List users: ./scripts/get_ldap_users.py
+8. Add users from a YAML file: ./scripts/set_ldap_users.py test/users.yaml
+9. Verify users: ./scripts/get_ldap_users.py
+
+This Quickstart guide should help you set up and manage LDAP users quickly!
 
 ## Configuration Files and Scripts
 
@@ -294,5 +383,5 @@ over values in the config file.
 #### Example Command
 
 ```
-./create_ldap_user.py users.yaml --user-base "ou=users,dc=example,dc=org" --group-base "ou=groups,dc=example,dc=org" users.yaml
+./scripts/create_ldap_user.py users.yaml --user-base "ou=users,dc=example,dc=org" --group-base "ou=groups,dc=example,dc=org" users.yaml
 ```
