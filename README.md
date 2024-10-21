@@ -174,7 +174,7 @@ This is automated using the `apply_memberof` target
 make apply_memberof
 ```
 
-## KubernetesSC Support
+## `kubernetesSC` user extension
 
 The user definition (inetOrgUser) has been extended to also include a
 Kubernetes SecurityContext and PodSecurityContext indended to modify a
