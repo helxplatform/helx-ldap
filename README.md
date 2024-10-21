@@ -195,3 +195,104 @@ starts in the `ldif/kubernetesSC` directory.
 ```
 make apply_kubernetes_sc
 ```
+
+## General Use Scripts
+
+### `get_ldap_dn.py` Script
+
+The `get_ldap_dn.py` script retrieves all Distinguished Names (DNs) from an 
+LDAP server. It can be used to connect to an LDAP server, perform a search 
+from a specified base DN, and return a list of all DNs found in that subtree.
+
+The script accepts connection details either from the command-line arguments 
+or from an optional `helx_ldap_config.yaml` file. Command-line arguments 
+always take precedence over configuration values if both are provided.
+
+#### Usage
+
+You can run the script by specifying the LDAP server URL, bind DN, password, 
+and search base either via command-line options or by using the configuration 
+file:
+
+```
+scripts/get_ldap_dn.py --ldap-server <LDAP_SERVER_URL> --bind-password <BIND_PASSWORD>
+```
+
+### `delete_ldap_user.py` Script
+
+The `delete_ldap_user.py` script is designed to delete a single LDAP entry 
+specified by its Distinguished Name (DN). It connects to an LDAP server, binds 
+with the provided credentials, and deletes the specified user or entry.
+
+The script supports connection details either passed via command-line arguments 
+or from an optional `helx_ldap_config.yaml` configuration file. Command-line 
+arguments take precedence if both sources are provided.
+
+#### Usage
+
+You can run the script by specifying the DN of the entry to delete and either 
+providing the LDAP server credentials via arguments or relying on the 
+configuration file:
+
+```
+scripts/delete_ldap_user.py <DN> --ldap-server <LDAP_SERVER_URL> --bind-password <BIND_PASSWORD>
+```
+
+### `uuid_to_oid.py` Script
+
+The `uuid_to_oid.py` script generates a random UUID (Universally Unique 
+Identifier) and converts it to an OID (Object Identifier) in dotted decimal 
+format. The UUID is generated using Python's built-in `uuid` module, and the 
+OID is constructed by appending the UUID's integer representation to the prefix 
+`2.25`.
+
+This script can be used to create unique identifiers in the OID format, which 
+is often used in network management, X.500 directories, and other similar 
+applications.
+
+### Usage
+
+Run the script directly to generate a UUID and its corresponding OID:
+
+```
+scripts/uuid_to_oid.py
+```
+
+### LDAP User Retrieval Script
+
+The `get_ldap_users.py` script retrieves and displays user details from an LDAP 
+server, including group memberships. The script can output user details in 
+either text or YAML format. It is intended for use in environments where LDAP 
+is used for directory services and requires authentication and access to user 
+data.
+
+#### Usage
+
+To run the script, provide connection details for the LDAP server, including 
+the server URL, bind DN, and password. You can specify these details as 
+command-line arguments or load them from a configuration file 
+(`helx_ldap_config.yaml`).
+
+#### Example Command
+
+```
+./scripts/get_ldap_users.py --output-format yaml
+```
+### LDAP User Creation Script
+
+The `create_ldap_user.py` script allows you to create or update LDAP users 
+from a YAML file and manage their group memberships. The script connects to an 
+LDAP server, ensuring that users and groups are properly configured.
+
+#### Usage
+
+To run the script, you can either specify the necessary LDAP connection 
+details via command-line arguments or use a configuration file 
+(`helx_ldap_config.yaml`). Command-line arguments will take precedence 
+over values in the config file.
+
+#### Example Command
+
+```
+./create_ldap_user.py users.yaml --user-base "ou=users,dc=example,dc=org" --group-base "ou=groups,dc=example,dc=org" users.yaml
+```
