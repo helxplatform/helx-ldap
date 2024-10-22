@@ -17,8 +17,11 @@ files necessary for the deployment and setup of OpenLDAP.
 
 ## Quickstart
 
-Follow these steps to get the project up and running quickly using the provided 
-Makefile targets and default settings.
+This Quickstart guide should help you set up the administrative environment,
+install and configure the LDAP server, provide connectivity to it (via 
+port-forward) install extensions and configure to HeLx users, and verify
+functionality by adding a test user.  Follow the steps below to get the
+project up and running using the provided Makefile targets and default settings.
 
 ### Prerequisites
 
@@ -102,7 +105,6 @@ successfully:
 8. Add users from a YAML file: ./scripts/set_ldap_users.py test/users.yaml
 9. Verify users: ./scripts/get_ldap_users.py
 
-This Quickstart guide should help you set up and manage LDAP users quickly!
 
 ## Configuration Files and Scripts
 
@@ -206,7 +208,8 @@ permissions, we will forward the service to port **5389** on your local machine.
 
 #### Port-Forwarding the OpenLDAP Service
 
-To forward the LDAP port to **5389** locally, run the following command:
+To allow convenient administrative local connectivity, forward the LDAP port
+to **5389** locally, run the following command:
 
 ```
 kubectl port-forward svc/openldap 5389:389
