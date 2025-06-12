@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "main/docs" // Replace with your actual module path.
@@ -77,10 +78,11 @@ type LDAPResult struct {
 }
 
 // Define two result types.
-type ResultEntrySimple struct {
+type LDAPResultSimple struct {
 	DN string `json:"dn"`
 }
 
+/*
 type ResultEntryFull struct {
 	DN      string                 `json:"dn"`
 	Content map[string]interface{} `json:"content"`
@@ -90,19 +92,46 @@ type TransformedEntry struct {
 	DN      string                 `json:"dn"`
 	Content map[string]interface{} `json:"content"`
 }
+*/
 
 // HookResponse represents the hook response JSON.
 type HookResponse struct {
-	Transformed *TransformedEntry   `json:"transformed"`
+	Transformed *LDAPResult         `json:"transformed"`
 	Derived     []DerivedSearchSpec `json:"derived"`
-	Reset       bool                `json:"reset"`
+	// Only once all of these DNs exist in the target LDAP
+	// should we store Transformed.
+	Dependencies []string `json:"dependencies"`
+}
+
+// SearchTask holds everything we need to schedule one LDAP search.
+type SearchTask struct {
+	ID       string
+	Filter   string
+	BaseDN   string
+	Interval time.Duration
+	NextRun  time.Time
+	OneShot  bool
 }
 
 var config Config
 var logger *slog.Logger
 var currentLogLevel string
-var searches = make(map[string]*SearchSpec)
+
+// var searches = make(map[string]*SearchSpec)
 var searchResults = make(map[string]map[string]LDAPResult)
+
+// map of searchID → *SearchTask
+var searchTasks = make(map[string]*SearchTask)
+
+// Mutex protecting access to searchTasks and results
+var searchTasksMutex = &sync.RWMutex{}
+var searchResultsMutex = &sync.RWMutex{}
+
+// Channels to wake the scheduler when searchTasks changes and communicate
+// interesting LDAP results
+var schedulerWakeUp = make(chan struct{})
+var hookEventsCh = make(chan LDAPResult, 100)
+var derivedSearchCh = make(chan DerivedSearchSpec, 100)
 
 // initLogger initializes the logger using log/slog.
 // It checks the --loglevel flag first, then the LOG_LEVEL env variable,
@@ -194,7 +223,7 @@ func performLDAPSearch(l *ldap.Conn, baseDN, filter string) (*ldap.SearchResult,
 	return l.Search(searchRequest)
 }
 
-func storeDestinationLDAP(entry *TransformedEntry) error {
+func storeDestinationLDAP(entry *LDAPResult) error {
 	// Connect to destination LDAP.
 	l, err := ldap.DialURL(config.Target.URL)
 	if err != nil {
@@ -273,6 +302,7 @@ func storeDestinationLDAP(entry *TransformedEntry) error {
 	return nil
 }
 
+/*
 // ldapSearchAndSync performs the LDAP search on the source server and synchronizes the results.
 func ldapSearchAndSync(id, filter, baseDN string, refresh int, oneshot bool, stopChan chan struct{}) {
 	for {
@@ -326,59 +356,79 @@ func ldapSearchAndSync(id, filter, baseDN string, refresh int, oneshot bool, sto
 		}
 	}
 }
+*/
 
-// processHookResponse is a stub for processing the hook response.
+// destinationEntryExists returns true if the given DN is present
+// in the destination server.
+func destinationEntryExists(dn string) bool {
+	l, err := ldap.DialURL(config.Target.URL)
+	if err != nil {
+		logger.Error("Dial target LDAP failed", "DN", dn, "Err", err)
+		return false
+	}
+	defer l.Close()
+
+	if err := l.Bind(config.Target.BindDN, config.Target.BindPassword); err != nil {
+		logger.Error("Bind target LDAP failed", "DN", dn, "Err", err)
+		return false
+	}
+
+	sr, err := l.Search(ldap.NewSearchRequest(
+		dn,
+		ldap.ScopeBaseObject,
+		ldap.NeverDerefAliases,
+		0, 1, false,
+		"(objectClass=*)",
+		[]string{"dn"},
+		nil,
+	))
+	if err != nil {
+		logger.Error("Search target LDAP failed", "DN", dn, "Err", err)
+		return false
+	}
+	return len(sr.Entries) > 0
+}
+
+// allDepsExist returns true only if every DN in deps is present.
+func allDepsExist(deps []string) bool {
+	for _, dn := range deps {
+		if !destinationEntryExists(dn) {
+			return false
+		}
+	}
+	return true
+}
+
 func processHookResponse(hookResp HookResponse) {
-	// Log the parsed hook response values.
-	logger.Debug("Processing Hook response", "Transformed", hookResp.Transformed, "Derived", hookResp.Derived, "Reset", hookResp.Reset)
+	logger.Debug("Processing Hook response",
+		"Transformed", hookResp.Transformed,
+		"Derived", hookResp.Derived,
+		"Dependencies", hookResp.Dependencies,
+	)
 
-	// Process the transformed element (if present).
+	// 1) Handle the transformed entry only once its dependencies are satisfied
 	if hookResp.Transformed != nil {
-		logger.Debug("Processing transformed hook response for DN", "DN", hookResp.Transformed.DN)
-		if err := storeDestinationLDAP(hookResp.Transformed); err != nil {
-			logger.Error("Error storing entry in destination LDAP", "Err", err)
+		// If no dependencies, store immediately; otherwise wait
+		if len(hookResp.Dependencies) == 0 || allDepsExist(hookResp.Dependencies) {
+			if err := storeDestinationLDAP(hookResp.Transformed); err != nil {
+				logger.Error("Error storing entry in destination LDAP",
+					"DN", hookResp.Transformed.DN, "Err", err)
+			}
+		} else {
+			logger.Info("Deferring store; unmet dependencies",
+				"DN", hookResp.Transformed.DN,
+				"WaitingFor", hookResp.Dependencies,
+			)
+			// Optionally: you could re-queue this HookResponse for retry,
+			// or rely on the hook system to re-send once the derived entries exist.
 		}
 	} else {
-		logger.Info("No transformed data in hook response")
+		logger.Info("No transformed payload; skipping store")
 	}
 
-	// Process each derived search provided.
+	// enqueue each derived spec for the central processor
 	for _, ds := range hookResp.Derived {
-		if spec, exists := searches[ds.ID]; exists {
-			// Update existing search.
-			close(spec.Stop)
-			stopChan := make(chan struct{})
-			spec.Filter = ds.Filter
-			spec.Refresh = ds.Refresh
-			spec.BaseDN = ds.BaseDN
-			spec.Oneshot = ds.Oneshot
-			spec.Stop = stopChan
-			go ldapSearchAndSync(ds.ID, ds.Filter, ds.BaseDN, ds.Refresh, ds.Oneshot, stopChan)
-			logger.Info("Derived search updated", "SearchId", ds.ID)
-		} else {
-			// Create a new search.
-			stopChan := make(chan struct{})
-			spec := &SearchSpec{
-				Filter:  ds.Filter,
-				Refresh: ds.Refresh,
-				BaseDN:  ds.BaseDN,
-				Oneshot: ds.Oneshot,
-				Stop:    stopChan,
-			}
-			searches[ds.ID] = spec
-			// Initialize the structured results store for this search id.
-			searchResults[ds.ID] = make(map[string]LDAPResult)
-			go ldapSearchAndSync(ds.ID, ds.Filter, ds.BaseDN, ds.Refresh, ds.Oneshot, stopChan)
-			logger.Info("Derived search created", "SearchId", ds.ID)
-		}
-	}
-	// Process the reset directive.
-	if hookResp.Reset {
-		logger.Info("Reset directive received. Discarding internal search results")
-		// Clear all internal search results.
-		for id := range searchResults {
-			searchResults[id] = make(map[string]LDAPResult)
-		}
+		derivedSearchCh <- ds
 	}
 }
 
@@ -415,12 +465,10 @@ func sendHooks(result LDAPResult) {
 	}
 }
 
-// processLDAPEntry processes a single LDAP entry, updating the searchResults
-// for the given search id. It builds a structured attribute map, and logs whether
-// the entry is new, updated, or unchanged.
-func processLDAPEntry(id string, entry *ldap.Entry, oneshot bool) {
+func processLDAPEntry(searchID string, entry *ldap.Entry, oneShot bool) {
+	// build the map[string]interface{} as before
 	dn := entry.DN
-	attrMap := make(map[string]interface{})
+	attrMap := make(map[string]interface{}, len(entry.Attributes))
 	for _, attr := range entry.Attributes {
 		if len(attr.Values) == 1 {
 			attrMap[attr.Name] = attr.Values[0]
@@ -429,28 +477,172 @@ func processLDAPEntry(id string, entry *ldap.Entry, oneshot bool) {
 		}
 	}
 
-	newResult := LDAPResult{
-		DN:      dn,
-		Content: attrMap,
+	newResult := LDAPResult{DN: dn, Content: attrMap}
+
+	// update the shared searchResults under lock
+	searchResultsMutex.Lock()
+	defer searchResultsMutex.Unlock()
+	resultsMap, ok := searchResults[searchID]
+	if !ok {
+		resultsMap = make(map[string]LDAPResult)
+		searchResults[searchID] = resultsMap
 	}
 
-	if existing, exists := searchResults[id][dn]; !exists {
-		searchResults[id][dn] = newResult
-		logger.Info("New item retrieved", "DN", dn, "SearchId", id)
-		if !oneshot {
-			sendHooks(newResult)
+	existing, exists := resultsMap[dn]
+	if !exists {
+		// new entry
+		resultsMap[dn] = newResult
+		logger.Info("New item retrieved", "DN", dn, "SearchId", searchID)
+		if !oneShot {
+			hookEventsCh <- newResult
+		}
+	} else if !reflect.DeepEqual(existing.Content, attrMap) {
+		// updated entry
+		resultsMap[dn] = newResult
+		logger.Info("Updated item", "DN", dn, "SearchId", searchID)
+		if !oneShot {
+			hookEventsCh <- newResult
 		}
 	} else {
-		if !reflect.DeepEqual(existing.Content, attrMap) {
-			searchResults[id][dn] = newResult
-			logger.Info("Updated item search", "DN", dn, "SearchId", id)
-			if !oneshot {
-				sendHooks(newResult)
+		// unchanged
+		logger.Debug("No change", "DN", dn, "SearchId", searchID)
+	}
+}
+
+// runSearchScheduler drives all LDAP searches in a single goroutine.
+func runSearchScheduler(tasks map[string]*SearchTask, tasksMu *sync.RWMutex, wakeUp <-chan struct{}) {
+	for {
+		// 1) Lock and dispatch any due tasks
+		tasksMu.Lock()
+		now := time.Now()
+
+		logger.Info("scanning tasks")
+
+		for id, t := range tasks {
+			if !t.NextRun.After(now) {
+				// Connect & bind using your helper
+				conn, err := connectAndBindLDAP()
+				if err != nil {
+					logger.Error("LDAP connect/bind failed", "SearchID", id, "Err", err)
+				} else {
+					// Perform the search
+					sr, err := performLDAPSearch(conn, t.BaseDN, t.Filter)
+					conn.Close()
+					if err != nil {
+						logger.Error("LDAP search failed", "SearchID", id, "Err", err)
+					} else {
+						for _, entry := range sr.Entries {
+							processLDAPEntry(id, entry, t.OneShot)
+						}
+					}
+				}
+
+				// Remove one-shots, or schedule next run
+				if t.OneShot {
+					delete(tasks, id)
+				} else {
+					t.NextRun = now.Add(t.Interval)
+				}
 			}
-		} else {
-			logger.Debug("No change", "DN", dn, "SearchId", id)
+		}
+
+		// 2) Figure out the next wake-up time
+		var nextWake time.Time
+		for _, t := range tasks {
+			if nextWake.IsZero() || t.NextRun.Before(nextWake) {
+				nextWake = t.NextRun
+			}
+		}
+		tasksMu.Unlock()
+
+		// 3) If nothing left, block until a new task appears
+		if nextWake.IsZero() {
+			<-wakeUp
+			continue
+		}
+
+		// 4) Sleep until then (min granularity 1s), or wake early on update
+		sleepDur := time.Until(nextWake)
+		if sleepDur < time.Second {
+			sleepDur = time.Second
+		}
+		select {
+		case <-time.After(sleepDur):
+		case <-wakeUp:
 		}
 	}
+}
+
+// upsertSearchTask inserts or updates a task atomically.
+//
+//	– requireNotExists: if true, error if task already exists (for POST semantics)
+//	– requireExists:    if true, error if task does NOT exist (for PUT semantics)
+func upsertSearchTask(id, filter, baseDN string, refreshSec int, oneShot bool, requireNotExists bool, requireExists bool) error {
+	var nextRun time.Time
+
+	searchTasksMutex.Lock()
+	defer searchTasksMutex.Unlock()
+
+	_, exists := searchTasks[id]
+	if requireNotExists && exists {
+		return fmt.Errorf("search %q already exists", id)
+	}
+	if requireExists && !exists {
+		return fmt.Errorf("search %q does not exist", id)
+	}
+
+	// Insert or overwrite the task:
+	searchTasks[id] = &SearchTask{ID: id, Filter: filter, BaseDN: baseDN, Interval: time.Duration(refreshSec) * time.Second, NextRun: nextRun, OneShot: oneShot}
+
+	// Wake the scheduler so it can recalc immediately
+	go func() { schedulerWakeUp <- struct{}{} }()
+	return nil
+}
+
+// deleteSearchTask atomically removes a scheduled search.
+func deleteSearchTask(id string) error {
+	searchTasksMutex.Lock()
+	defer searchTasksMutex.Unlock()
+
+	if _, exists := searchTasks[id]; !exists {
+		return fmt.Errorf("search %q not found", id)
+	}
+
+	delete(searchTasks, id)
+	// Wake the scheduler so it notices the deletion immediately
+	go func() { schedulerWakeUp <- struct{}{} }()
+	return nil
+}
+
+// startBackgroundWorkers spins up:
+//   - the hook‐processor loop
+//   - the derived-search loop
+//   - the central LDAP-search scheduler
+func startBackgroundWorkers() {
+	// 1) Hook-processor: consume new/changed LDAPResults → sendHooks
+	go func() {
+		for res := range hookEventsCh {
+			sendHooks(res)
+		}
+	}()
+
+	// 2) Derived-search processor: consume DerivedSearchSpecs → upsert tasks
+	go func() {
+		for ds := range derivedSearchCh {
+			baseDN := ds.BaseDN
+			if baseDN == "" {
+				baseDN = config.Source.BaseDN
+			}
+			if err := upsertSearchTask(ds.ID, ds.Filter, baseDN, ds.Refresh, ds.Oneshot, false, false); err != nil {
+				logger.Error("Failed to schedule derived search", "SearchId", ds.ID, "Err", err)
+			} else {
+				logger.Info("Derived search scheduled/updated", "SearchId", ds.ID)
+			}
+		}
+	}()
+
+	// 3) Central scheduler driving all LDAP searches
+	go runSearchScheduler(searchTasks, searchTasksMutex, schedulerWakeUp)
 }
 
 // createSearchHandler godoc
@@ -478,38 +670,28 @@ func createSearchHandler(c echo.Context) error {
 	if id == "" || filter == "" || refreshStr == "" {
 		return c.String(http.StatusBadRequest, "Missing required parameters (id, filter, refresh)")
 	}
-	if _, exists := searches[id]; exists {
-		return c.String(http.StatusBadRequest, "Search with this id already exists")
-	}
-	refresh, err := strconv.Atoi(refreshStr)
+
+	// Parse refresh interval
+	refreshSec, err := strconv.Atoi(refreshStr)
 	if err != nil {
 		return c.String(http.StatusBadRequest, "Invalid refresh parameter")
 	}
 
-	// Parse oneShot parameter; default to true if not provided.
-	oneShotStr := c.FormValue("oneShot")
-	oneshot := true
-	if oneShotStr != "" {
-		parsed, err := strconv.ParseBool(oneShotStr)
-		if err != nil {
+	// Parse oneShot flag
+	oneShot := true
+	if os := c.FormValue("oneShot"); os != "" {
+		if parsed, err := strconv.ParseBool(os); err != nil {
 			return c.String(http.StatusBadRequest, "Invalid oneShot parameter")
+		} else {
+			oneShot = parsed
 		}
-		oneshot = parsed
 	}
 
-	stopChan := make(chan struct{})
-	spec := &SearchSpec{
-		Filter:  filter,
-		Refresh: refresh,
-		Stop:    stopChan,
-		BaseDN:  baseDN,
-		Oneshot: oneshot,
+	// Atomically insert, rejecting if already present:
+	if err := upsertSearchTask(id, filter, baseDN, refreshSec, oneShot, true, false); err != nil {
+		return c.String(http.StatusBadRequest, err.Error())
 	}
-	searches[id] = spec
-	// Initialize the structured results store for this search id.
-	searchResults[id] = make(map[string]LDAPResult)
-	// Pass the oneshot flag to the search routine.
-	go ldapSearchAndSync(id, filter, baseDN, refresh, oneshot, stopChan)
+
 	return c.String(http.StatusOK, "Search created")
 }
 
@@ -525,30 +707,36 @@ func createSearchHandler(c echo.Context) error {
 // @Router /search [get]
 func getSearchHandler(c echo.Context) error {
 	id := c.QueryParam("id")
+
+	// Lock for reading the searchTasks map
+	searchTasksMutex.RLock()
+	defer searchTasksMutex.RUnlock()
+
 	if id != "" {
-		spec, exists := searches[id]
+		spec, exists := searchTasks[id]
 		if !exists {
 			return c.String(http.StatusNotFound, "Search with given id not found")
 		}
+		// Build response from the locked spec
 		result := SearchInfo{
-			ID:      id,
+			ID:      spec.ID,
 			Filter:  spec.Filter,
-			Refresh: spec.Refresh,
+			Refresh: int(spec.Interval.Seconds()),
 			BaseDN:  spec.BaseDN,
-			Oneshot: spec.Oneshot,
+			Oneshot: spec.OneShot,
 		}
 		return c.JSON(http.StatusOK, result)
 	}
 
-	// No id provided; return all searches.
-	var results []SearchInfo
-	for k, spec := range searches {
+	// No id provided; copy all into a slice
+	results := make([]SearchInfo, 0, len(searchTasks))
+	for _, spec := range searchTasks {
 		results = append(results, SearchInfo{
-			ID:      k,
+			ID:      spec.ID,
 			Filter:  spec.Filter,
-			Refresh: spec.Refresh,
+			Refresh: int(spec.Interval.Seconds()),
 			BaseDN:  spec.BaseDN,
-			Oneshot: spec.Oneshot,
+			Oneshot: spec.OneShot,
 		})
 	}
 	return c.JSON(http.StatusOK, results)
@@ -579,10 +767,6 @@ func updateSearchHandler(c echo.Context) error {
 	if id == "" || filter == "" || refreshStr == "" {
 		return c.String(http.StatusBadRequest, "Missing required parameters (id, filter, refresh)")
 	}
-	spec, exists := searches[id]
-	if !exists {
-		return c.String(http.StatusBadRequest, "Search with this id does not exist")
-	}
 	refresh, err := strconv.Atoi(refreshStr)
 	if err != nil {
 		return c.String(http.StatusBadRequest, "Invalid refresh parameter")
@@ -599,17 +783,10 @@ func updateSearchHandler(c echo.Context) error {
 		oneshot = parsed
 	}
 
-	// Cancel the current search.
-	close(spec.Stop)
-	stopChan := make(chan struct{})
-	// Update the search spec.
-	spec.Filter = filter
-	spec.Refresh = refresh
-	spec.BaseDN = baseDN
-	spec.Oneshot = oneshot
-	spec.Stop = stopChan
-	// Restart the search goroutine with the new oneshot flag.
-	go ldapSearchAndSync(id, filter, baseDN, refresh, oneshot, stopChan)
+	// Atomically require the task to exist, then overwrite it:
+	if err := upsertSearchTask(id, filter, baseDN, refresh, oneshot, false, true); err != nil {
+		return c.String(http.StatusBadRequest, err.Error())
+	}
 	return c.String(http.StatusOK, "Search updated")
 }
 
@@ -624,16 +801,17 @@ func updateSearchHandler(c echo.Context) error {
 // @Router /search/{id} [delete]
 func deleteSearchHandler(c echo.Context) error {
 	id := c.Param("id")
-	spec, exists := searches[id]
-	if !exists {
+
+	// Atomically delete from the scheduler
+	if err := deleteSearchTask(id); err != nil {
 		return c.String(http.StatusNotFound, "Search not found")
 	}
-	// Cancel the running search.
-	close(spec.Stop)
-	// Remove from the map.
-	delete(searches, id)
-	// Remove the results too
+
+	// Clean up stored results
+	searchResultsMutex.Lock()
 	delete(searchResults, id)
+	searchResultsMutex.Unlock()
+
 	return c.String(http.StatusOK, "Search deleted")
 }
 
@@ -647,33 +825,39 @@ func deleteSearchHandler(c echo.Context) error {
 // @Produce json
 // @Param id path string true "Unique search id"
 // @Param full query boolean false "Return full result (DN and content) if true, else only DN"
-// @Success 200 {array} ResultEntrySimple "When full is false"
-// @Success 200 {array} ResultEntryFull "When full is true"
+// @Success 200 {array} LDAPResultSimple "When full is false"
+// @Success 200 {array} LDAPResult "When full is true"
 // @Failure 404 {string} string "Search results not found"
 // @Router /results/{id} [get]
 func getResultsHandler(c echo.Context) error {
 	id := c.Param("id")
-	results, exists := searchResults[id]
+
+	// Acquire read lock while accessing the map
+	searchResultsMutex.RLock()
+	resultsMap, exists := searchResults[id]
 	if !exists {
+		searchResultsMutex.RUnlock()
 		return c.String(http.StatusNotFound, "Search results not found for id: "+id)
 	}
 
 	full, _ := strconv.ParseBool(c.QueryParam("full"))
 	if full {
-		var entries []ResultEntryFull
-		for _, res := range results {
-			entries = append(entries, ResultEntryFull(res))
+		// Collect full entries under lock
+		entries := make([]LDAPResult, 0, len(resultsMap))
+		for _, res := range resultsMap {
+			entries = append(entries, res)
 		}
+		searchResultsMutex.RUnlock()
 		return c.JSON(http.StatusOK, entries)
 	}
 
-	var entries []ResultEntrySimple
-	for _, res := range results {
-		entries = append(entries, ResultEntrySimple{
-			DN: res.DN,
-		})
+	// Collect only DNs under lock
+	simple := make([]LDAPResultSimple, 0, len(resultsMap))
+	for _, res := range resultsMap {
+		simple = append(simple, LDAPResultSimple{DN: res.DN})
 	}
-	return c.JSON(http.StatusOK, entries)
+	searchResultsMutex.RUnlock()
+	return c.JSON(http.StatusOK, simple)
 }
 
 // getLogLevelHandler is a REST endpoint that reports the current log level.
@@ -765,6 +949,8 @@ func main() {
 		logger.Error("Error loading config", "Err", err)
 		os.Exit(1)
 	}
+
+	startBackgroundWorkers()
 
 	// Initialize Echo.
 	e := echo.New()

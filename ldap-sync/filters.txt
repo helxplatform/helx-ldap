@@ -36,3 +36,9 @@ get posix groups
     "BaseDN": "ou=Systems,ou=PosixGroups,dc=unc,dc=edu",
     "Oneshot": false
 }
+
+get all staging
+
+filter: (&(objectClass=uncgroup)(cn=unc:app:renci:ordrd:staging:*))
+
+ou=groups,dc=unc,dc=edu

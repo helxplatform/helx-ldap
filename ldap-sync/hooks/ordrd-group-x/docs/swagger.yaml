@@ -1,5 +1,38 @@
+basePath: /
 definitions:
-  main.DerivedSearch:
+  main.ErrorResponse:
+    properties:
+      message:
+        type: string
+    type: object
+  main.HookRequest:
+    properties:
+      content:
+        additionalProperties: true
+        description: |-
+          Attributes of the entry
+          required: true
+        type: object
+      dn:
+        description: |-
+          Distinguished Name of the LDAP entry
+          required: true
+        type: string
+    type: object
+  main.HookResponse:
+    properties:
+      dependencies:
+        items:
+          type: string
+        type: array
+      derived:
+        items:
+          $ref: '#/definitions/main.SearchSpec'
+        type: array
+      transformed:
+        $ref: '#/definitions/main.TransformedEntry'
+    type: object
+  main.SearchSpec:
     properties:
       baseDN:
         type: string
@@ -12,7 +45,7 @@ definitions:
       refresh:
         type: integer
     type: object
-  main.HookRequest:
+  main.TransformedEntry:
     properties:
       content:
         additionalProperties: true
@@ -20,28 +53,22 @@ definitions:
       dn:
         type: string
     type: object
-  main.HookResponse:
-    properties:
-      derived:
-        items:
-          $ref: '#/definitions/main.DerivedSearch'
-        type: array
-      reset:
-        type: boolean
-      transformed: {}
-    type: object
+host: localhost:5001
 info:
   contact: {}
+  description: LDAP synchronization hook for ordrd-group-x
+  title: Hook Service
+  version: 2.0.0
 paths:
   /hook:
     post:
       consumes:
       - application/json
-      description: Process and transform LDAP entries based on their type.
+      description: Transform LDAP entries, derive searches, declare dependencies
       parameters:
-      - description: LDAP Hook Payload
+      - description: Hook payload
         in: body
-        name: payload
+        name: hook
         required: true
         schema:
           $ref: '#/definitions/main.HookRequest'
@@ -52,5 +79,9 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/main.HookResponse'
-      summary: Process LDAP hook payload
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+      summary: Process LDAP hook
 swagger: "2.0"

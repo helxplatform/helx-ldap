@@ -1,71 +1,69 @@
-# Hook Service Generation Prompt 
+# Hook Service Generation Prompt  
 ## version
 
-This is version 1.1.1
+This is version **2.0.0**
 
-You are an experienced Go developer. Your task is to build a hook
-service that integrates with an existing LDAP synchronization system.
-The hook service must be implemented in Go using the Echo framework,
-and include OpenAPI documentation via swaggo (ensure that the annotations
+You are an experienced Go developer. Your task is to build a hook  
+service that integrates with an existing LDAP synchronization system.  
+The hook service must be implemented in Go using the Echo framework,  
+and include OpenAPI documentation via swaggo (ensure that the annotations  
 are valid and parsable by swaggo).
 
-The hook service will be called by the main LDAP system whenever it
-detects a new or changed LDAP entry. It should expose a POST endpoint at
-`/hook` that accepts a JSON payload containing only two fields:
+The hook service will be called by the main LDAP system whenever it  
+detects a new or changed LDAP entry. It should expose a `POST /hook`  
+endpoint that accepts a JSON payload containing only two fields:
 
-- **"dn"**: a string representing the distinguished name (DN) of the
-  LDAP entry.
-- **"content"**: a JSON object representing the LDAP attributes of the
-  entry. For each attribute, if there is a single value, it should be
-  stored as a string; if there are multiple values, they should be stored
-  as an array.
+- **`dn`**: a string representing the distinguished name (DN) of the  
+  LDAP entry.  
+- **`content`**: a JSON object representing the LDAP attributes of the  
+  entry. Single-valued attributes are strings; multi-valued are arrays.
 
-The hook service must process the payload as follows:
+### Payload Processing
 
-1. **Transformation**: It must apply a specialized transformation to
-   the received payload. This transformation logic is defined by the
-   example(s) below variable expressions are indicated by {{}}:
+1. **Transformation**  
+   Apply specialized transformation logic to the incoming payload.  
+   (Variable expressions are indicated by `{{}}`—ask clarifying  
+   questions if the examples are insufficient). If the input doesn't
+   correspond to any example, return null for transformed, and zero-length
+   derived and dependencies
 
-   *(Note: You may decide that the example is or is not sufficient and ask
-   clarifying questions if needed. Also, verify that the filter and DN are
-   correctly constructed to catch any user errors.)*
+2. **Object‐Type Dispatch**  
+   Inspect the payload to determine its object type. There may be  
+   several types; each type can trigger different logic. If the payload  
+   is unrecognized, log or skip accordingly. Clearly mark where custom  
+   handlers can be injected.
 
-2. **Object Type Inspection**: The hook should inspect the incoming payload
-   to determine its object type. There may be more than one incoming object
-   type, and different processing should occur depending on the content.
-   If the payload does not match an expected type, the hook should handle it
-   appropriately (e.g., log an error or skip processing). Clearly mark where
-   the user may substitute their own handling logic for different types.
+3. **New Search Definitions**  
+   Decide whether this entry should spawn additional LDAP searches.  
+   Populate the `"derived"` list accordingly.
 
-3. **New search Definitions**:  The hook should determine if the contents
-   should create addional new searches and populate Derived and is also
-   defined by the examples.
+4. **Response Contract**
+   Your handler must return a JSON object with three keys:
+   ```jsonc
+   {
+     "transformed":  { ... }, // MAY be null if you truly have no change
+     "derived":      [ ... ], // zero or more search specs
+     "dependencies": [ ... ]  // zero or more destination‑LDAP DNs
+   }
+   ```
+   - **`transformed`** — the final DN + attribute map that should be
+     written to the **destination** LDAP. Do **not** suppress this
+     object when dependencies are present; simply include it.
+   - **`derived`** — array of search specs, each with
+     `id`, `filter`, `refresh`, `baseDN`, `oneshot`.
+   - **`dependencies`** — list of destination‑LDAP DNs that **must
+     exist** *before* the sync system is allowed to write `transformed`.
+     The hook does **not** decide when these DNs exist; it merely
+     declares them. The sync engine holds the response until all
+     dependencies are satisfied.
 
-4. **Response**: After applying the transformation, the hook service should
-   return a JSON response containing three keys:
-
-   - **"transformed"**: This is the result of performing the transformation
-     login on the contents
-     
-   - **"derived"**: An array of additional search specifications. Each
-     element in "derived" must be a JSON object that describes a search
-     specification with at least the following fields:
-       - **"id"**: a unique search identifier.
-       - **"filter"**: an LDAP filter string.
-       - **"refresh"**: an integer specifying the refresh interval in
-         seconds.
-       - **"baseDN"**: a string specifying the base DN to use for the search.
-       
-   - **"reset"**: A boolean directive. If set to `true`, the driver must
-     discard its stored internal search results so that on the next run the
-     hook is called again and can update its state. This is used when the
-     transformation is dependent on the results of further searches.
-
-4. **Processing Summary**: The hook service should output a summary of the
+5. **Processing Summary**: The hook service should output a summary of the
    conversion (the "transformed" and "derived" elements, as well as the
-   "reset" directive) for debugging purposes. This summary should also be
+   dependency list) for debugging purposes. This summary should also be
    included in a README file along with instructions for how to customize
-   the transformation logic.
+   the transformation logic and object‑type handlers.
+
+---
 
 ## Examples
 
@@ -79,30 +77,37 @@ In addition to the procesing described above based on Example1
 input and Example1 output perform the following
 
 The hook code should maintain a pid to uid map that will be populated
-by the processing of UNC Users (see Example2).
+by the processing of UNC Users (see Example2).  In addition, the
+hook code should maintain and update the ordrd group transformation.
 
-The special instructions only affect value of transformation and reset,
-but derived should be returned in all cases.
+##### Case 1 
 
-If any uids can not be found in the map, then set transformed to null
-and reset to true.  If all pids can be found in the pidUidMap, then use
+If any uids can not be found in the map, then set content as described
+in case 1 output below.
+
+##### Case 2
+
+If all pids can be found in the pidUidMap, then use
 the value found in the map in transformed and perform the transformation
-as illustrated in the example below. 
+as illustrated in the example case 2 below where the elements of the 
+piduidMap are expressed in both the member object in transformed
+as well as dependencies.
+
+This case will be satistied during the processing of Example 2; when
+that first occurs, append Case 2 output to the Example 2 output.
 
 #### Example1 Input
 
     {
-      "dn": "cn=unc:app:renci:{{ groupname }},ou=Groups,dc=unc,dc=edu",
+      "dn": "cn=unc:app:renci:ordrd:{{ deployment }}:{{ groupname }},ou=Groups,dc=unc,dc=edu",
       "content": {
-        "cn": "unc:app:renci:{{ groupname }}",
+        "cn": "unc:app:renci:ordrd:{{ deployment }}:{{ groupname }}",
         "description": "ordrd-example, RENCI, Applications, UNC Chapel Hill",
         "isPublic": "Y",
         "member": [
           "pid=713272486,ou=people,dc=unc,dc=edu",
           "pid=709909262,ou=people,dc=unc,dc=edu",
-          "pid=730294000,ou=people,dc=unc,dc=edu",
-          "pid=700268159,ou=people,dc=unc,dc=edu",
-          "pid=730383111,ou=people,dc=unc,dc=edu"
+          "pid=730294000,ou=people,dc=unc,dc=edu"
         ],
         "objectClass": [
           "groupOfNames",
@@ -113,7 +118,23 @@ as illustrated in the example below.
     }
 
 #### Example1 Output
+
+##### Case 1
+
+    {
+      "transformed": null,
+      "derived": [{
+        "id": "ordrd-{{ deployment}}-{{ groupname }}-members",
+        "filter": "(|(pid=713272486)(pid=709909262)(pid=730294000))",
+        "refresh": 10,
+        "baseDN": "ou=people,dc=unc,dc=edu",
+        "oneshot": false
+      }],
+      dependencies: []
+    }
    
+##### Case 2
+
     {
       "transformed": {
         "dn": "cn={{ groupname }},ou=groups,dc=example,dc=org",
@@ -122,9 +143,7 @@ as illustrated in the example below.
           "member": [
             "uid={{ piduidMap["713272486"] }},ou=users,dc=example,dc=org",
             "uid={{ piduidMap["709909262"] }},ou=users,dc=example,dc=org",
-            "uid={{ piduidMap["730294000"] }},ou=users,dc=example,dc=org",
-            "uid={{ piduidMap["700268159"] }},ou=users,dc=example,dc=org",
-            "uid={{ piduidMap["730383111"] }},ou=users,dc=example,dc=org"
+            "uid={{ piduidMap["730294000"] }},ou=users,dc=example,dc=org"
           ],
           "objectClass": [
             "top",
@@ -132,14 +151,12 @@ as illustrated in the example below.
           ]
         }
       },
-      "derived": [{
-        "id": "ordrd-members",
-        "filter": "(|(pid=713272486)(pid=709909262)(pid=730294000)(pid=700268159)(pid=730383111))",
-        "refresh": 10,
-        "baseDN": "ou=people,dc=unc,dc=edu",
-        "oneshot": false
-      }],
-      "reset": false
+      dervied: [],
+      dependencies: [
+          "uid={{ piduidMap["713272486"] }},ou=users,dc=example,dc=org",
+          "uid={{ piduidMap["709909262"] }},ou=users,dc=example,dc=org",
+          "uid={{ piduidMap["730294000"] }},ou=users,dc=example,dc=org"
+      ]
     }
 
 ### Example2 (UNC User)
@@ -258,10 +275,14 @@ application.  Assign the baseGid to all gidNumber
         "refresh": 10,
         "baseDN": "dc=unc,dc=edu",
         "oneshot": false
-      }]
+      }],
+      dependencies: []
     }
 
 ### Example3 (Posix Group)
+
+Copy the posix group object to the destination, preserve the cn, but
+place it in destination "ou=groups,dc=example,dc=org"
 
 #### Example3 Input
 
@@ -272,14 +293,14 @@ application.  Assign the baseGid to all gidNumber
       "description": "src=prop",
       "gidNumber": "200",
       "isPublic": "N",
-      "objectClass": [
-        "posixGroup",
-        "UNCGroup"
-      ],
       memberuid: [
         234,
         4350,
         9950
+      ],
+      "objectClass": [
+        "posixGroup",
+        "UNCGroup"
       ]
     }
   }
@@ -293,24 +314,27 @@ application.  Assign the baseGid to all gidNumber
         "cn": "its_employee_psx",
         "description": "src=prop",
         "gidNumber": "200",
+        memberuid: [
+          234,
+          4350,
+          9950
+        ],
         "objectClass": [
           "posixGroup"
         ]
-      },
-      memberuid: [
-        234,
-        4350,
-        9950
-      ]
+      }
     },
-    derived:[]
+    derived:[],
+    dependencies: []
   }
+
+---
 
 ## Application Id
 
 The application name is ordrd-group-x
 The application listens to port 5001
-This is version 1.0.1
+This is version 2.0.0
 
 ## Output
 
@@ -326,10 +350,11 @@ Your output should include the following artifacts:
    the transformation as specified, validate the correctness of the filter
    and DN to catch user errors, and decide what to do based on the content
    type.
-5. Return a JSON response with "transformed" (set to null), "derived", and
-   "reset" as described.
+5. Return a JSON response with "transformed", "derived", and "dependencies"
+   as described.
 6. Clearly mark the location where the user may replace the sample
-   transformation logic with their own code.
+   transformation logic with their own code, but generate as much as can
+   be determined from the instructions.
 
 ### B. Dockerfile
 
@@ -352,7 +377,7 @@ Your output should include the following artifacts:
 ### D. README
 
 1. Provide a summary of the conversion process (the "transformed" and
-   "derived" elements, as well as the "reset" directive) for debugging
+   "derived" elements, as well as the "dependencies") for debugging
    purposes.
 2. Include instructions on how to customize the transformation logic and
    how to add additional handling for different incoming object types.

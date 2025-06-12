@@ -40,21 +40,18 @@ const docTemplate = `{
         },
         "/hook": {
             "post": {
-                "description": "Process incoming LDAP hook payloads to transform data,",
+                "description": "Transform LDAP entries, derive searches, declare dependencies",
                 "consumes": [
                     "application/json"
                 ],
                 "produces": [
                     "application/json"
                 ],
-                "tags": [
-                    "hook"
-                ],
-                "summary": "Process LDAP hook payload",
+                "summary": "Process LDAP hook",
                 "parameters": [
                     {
-                        "description": "LDAP Hook Payload",
-                        "name": "payload",
+                        "description": "Hook payload",
+                        "name": "hook",
                         "in": "body",
                         "required": true,
                         "schema": {
@@ -72,10 +69,7 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
+                            "$ref": "#/definitions/main.ErrorResponse"
                         }
                     }
                 }
@@ -202,7 +196,7 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/main.ResultEntryFull"
+                                "$ref": "#/definitions/main.LDAPResult"
                             }
                         }
                     },
@@ -433,16 +427,24 @@ const docTemplate = `{
                 }
             }
         },
+        "main.ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
         "main.HookRequest": {
             "type": "object",
             "properties": {
                 "content": {
-                    "description": "Content is a JSON object representing LDAP attributes.",
+                    "description": "Attributes of the entry\nrequired: true",
                     "type": "object",
                     "additionalProperties": true
                 },
                 "dn": {
-                    "description": "DN is the distinguished name of the LDAP entry.\nexample: cn=unc:app:renci:ordrd-example,ou=Groups,dc=unc,dc=edu",
+                    "description": "Distinguished Name of the LDAP entry\nrequired: true",
                     "type": "string"
                 }
             }
@@ -450,29 +452,25 @@ const docTemplate = `{
         "main.HookResponse": {
             "type": "object",
             "properties": {
+                "dependencies": {
+                    "description": "Only once all of these DNs exist in the target LDAP\nshould we store Transformed.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "derived": {
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/main.DerivedSearchSpec"
                     }
                 },
-                "reset": {
-                    "type": "boolean"
-                },
                 "transformed": {
-                    "$ref": "#/definitions/main.TransformedEntry"
+                    "$ref": "#/definitions/main.LDAPResult"
                 }
             }
         },
-        "main.LogLevelRequest": {
-            "type": "object",
-            "properties": {
-                "level": {
-                    "type": "string"
-                }
-            }
-        },
-        "main.ResultEntryFull": {
+        "main.LDAPResult": {
             "type": "object",
             "properties": {
                 "content": {
@@ -484,10 +482,18 @@ const docTemplate = `{
                 }
             }
         },
-        "main.ResultEntrySimple": {
+        "main.LDAPResultSimple": {
             "type": "object",
             "properties": {
                 "dn": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.LogLevelRequest": {
+            "type": "object",
+            "properties": {
+                "level": {
                     "type": "string"
                 }
             }
@@ -509,18 +515,6 @@ const docTemplate = `{
                 },
                 "refresh": {
                     "type": "integer"
-                }
-            }
-        },
-        "main.TransformedEntry": {
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "object",
-                    "additionalProperties": true
-                },
-                "dn": {
-                    "type": "string"
                 }
             }
         }

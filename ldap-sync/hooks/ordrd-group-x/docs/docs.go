@@ -17,18 +17,18 @@ const docTemplate = `{
     "paths": {
         "/hook": {
             "post": {
-                "description": "Process and transform LDAP entries based on their type.",
+                "description": "Transform LDAP entries, derive searches, declare dependencies",
                 "consumes": [
                     "application/json"
                 ],
                 "produces": [
                     "application/json"
                 ],
-                "summary": "Process LDAP hook payload",
+                "summary": "Process LDAP hook",
                 "parameters": [
                     {
-                        "description": "LDAP Hook Payload",
-                        "name": "payload",
+                        "description": "Hook payload",
+                        "name": "hook",
                         "in": "body",
                         "required": true,
                         "schema": {
@@ -42,13 +42,61 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/main.HookResponse"
                         }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/main.ErrorResponse"
+                        }
                     }
                 }
             }
         }
     },
     "definitions": {
-        "main.DerivedSearch": {
+        "main.ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.HookRequest": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "description": "Attributes of the entry\nrequired: true",
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "dn": {
+                    "description": "Distinguished Name of the LDAP entry\nrequired: true",
+                    "type": "string"
+                }
+            }
+        },
+        "main.HookResponse": {
+            "type": "object",
+            "properties": {
+                "dependencies": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "derived": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SearchSpec"
+                    }
+                },
+                "transformed": {
+                    "$ref": "#/definitions/main.TransformedEntry"
+                }
+            }
+        },
+        "main.SearchSpec": {
             "type": "object",
             "properties": {
                 "baseDN": {
@@ -68,7 +116,7 @@ const docTemplate = `{
                 }
             }
         },
-        "main.HookRequest": {
+        "main.TransformedEntry": {
             "type": "object",
             "properties": {
                 "content": {
@@ -79,33 +127,18 @@ const docTemplate = `{
                     "type": "string"
                 }
             }
-        },
-        "main.HookResponse": {
-            "type": "object",
-            "properties": {
-                "derived": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/main.DerivedSearch"
-                    }
-                },
-                "reset": {
-                    "type": "boolean"
-                },
-                "transformed": {}
-            }
         }
     }
 }`
 
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
-	Version:          "",
-	Host:             "",
-	BasePath:         "",
+	Version:          "2.0.0",
+	Host:             "localhost:5001",
+	BasePath:         "/",
 	Schemes:          []string{},
-	Title:            "",
-	Description:      "",
+	Title:            "Hook Service",
+	Description:      "LDAP synchronization hook for ordrd-group-x",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

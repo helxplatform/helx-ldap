@@ -13,35 +13,42 @@ definitions:
       refresh:
         type: integer
     type: object
+  main.ErrorResponse:
+    properties:
+      message:
+        type: string
+    type: object
   main.HookRequest:
     properties:
       content:
         additionalProperties: true
-        description: Content is a JSON object representing LDAP attributes.
+        description: |-
+          Attributes of the entry
+          required: true
         type: object
       dn:
         description: |-
-          DN is the distinguished name of the LDAP entry.
-          example: cn=unc:app:renci:ordrd-example,ou=Groups,dc=unc,dc=edu
+          Distinguished Name of the LDAP entry
+          required: true
         type: string
     type: object
   main.HookResponse:
     properties:
+      dependencies:
+        description: |-
+          Only once all of these DNs exist in the target LDAP
+          should we store Transformed.
+        items:
+          type: string
+        type: array
       derived:
         items:
           $ref: '#/definitions/main.DerivedSearchSpec'
         type: array
-      reset:
-        type: boolean
       transformed:
-        $ref: '#/definitions/main.TransformedEntry'
+        $ref: '#/definitions/main.LDAPResult'
     type: object
-  main.LogLevelRequest:
-    properties:
-      level:
-        type: string
-    type: object
-  main.ResultEntryFull:
+  main.LDAPResult:
     properties:
       content:
         additionalProperties: true
@@ -49,9 +56,14 @@ definitions:
       dn:
         type: string
     type: object
-  main.ResultEntrySimple:
+  main.LDAPResultSimple:
     properties:
       dn:
+        type: string
+    type: object
+  main.LogLevelRequest:
+    properties:
+      level:
         type: string
     type: object
   main.SearchInfo:
@@ -66,14 +78,6 @@ definitions:
         type: boolean
       refresh:
         type: integer
-    type: object
-  main.TransformedEntry:
-    properties:
-      content:
-        additionalProperties: true
-        type: object
-      dn:
-        type: string
     type: object
 host: localhost:5500
 info:
@@ -101,11 +105,11 @@ paths:
     post:
       consumes:
       - application/json
-      description: Process incoming LDAP hook payloads to transform data,
+      description: Transform LDAP entries, derive searches, declare dependencies
       parameters:
-      - description: LDAP Hook Payload
+      - description: Hook payload
         in: body
-        name: payload
+        name: hook
         required: true
         schema:
           $ref: '#/definitions/main.HookRequest'
@@ -119,12 +123,8 @@ paths:
         "400":
           description: Bad Request
           schema:
-            additionalProperties:
-              type: string
-            type: object
-      summary: Process LDAP hook payload
-      tags:
-      - hook
+            $ref: '#/definitions/main.ErrorResponse'
+      summary: Process LDAP hook
   /loglevel:
     get:
       description: Returns the current log level.
@@ -204,7 +204,7 @@ paths:
           description: When full is true
           schema:
             items:
-              $ref: '#/definitions/main.ResultEntryFull'
+              $ref: '#/definitions/main.LDAPResult'
             type: array
         "404":
           description: Search results not found

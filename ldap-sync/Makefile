@@ -1,7 +1,7 @@
 .PHONY: build push docs
 
 REPOSITORY ?= containers.renci.org/helxplatform/ldap-sync
-TAG ?= latest
+TAG ?= v1.2.0
 
 build: docs
 	docker build --platform=linux/amd64 -t $(REPOSITORY):$(TAG) .
