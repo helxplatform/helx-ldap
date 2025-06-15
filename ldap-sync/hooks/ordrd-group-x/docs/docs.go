@@ -17,22 +17,22 @@ const docTemplate = `{
     "paths": {
         "/hook": {
             "post": {
-                "description": "Transforms LDAP entries and derives searches",
+                "description": "Processes LDAP hook payload and transforms or derives actions",
                 "consumes": [
                     "application/json"
                 ],
                 "produces": [
                     "application/json"
                 ],
-                "summary": "Process LDAP hook",
+                "summary": "LDAP Hook",
                 "parameters": [
                     {
-                        "description": "Hook request",
-                        "name": "body",
+                        "description": "Hook payload",
+                        "name": "payload",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/main.HookRequest"
+                            "$ref": "#/definitions/main.Payload"
                         }
                     }
                 ],
@@ -48,7 +48,39 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "main.DerivedSearch": {
+        "main.HookResponse": {
+            "type": "object",
+            "properties": {
+                "dependencies": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "derived": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.SearchSpec"
+                    }
+                },
+                "transformed": {
+                    "$ref": "#/definitions/main.Transformed"
+                }
+            }
+        },
+        "main.Payload": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "dn": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.SearchSpec": {
             "type": "object",
             "properties": {
                 "baseDN": {
@@ -68,41 +100,7 @@ const docTemplate = `{
                 }
             }
         },
-        "main.HookRequest": {
-            "type": "object",
-            "properties": {
-                "content": {
-                    "description": "Attributes of the entry\nrequired: true",
-                    "type": "object",
-                    "additionalProperties": true
-                },
-                "dn": {
-                    "description": "Distinguished Name of the LDAP entry\nrequired: true",
-                    "type": "string"
-                }
-            }
-        },
-        "main.HookResponse": {
-            "type": "object",
-            "properties": {
-                "dependencies": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "derived": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/main.DerivedSearch"
-                    }
-                },
-                "transformed": {
-                    "$ref": "#/definitions/main.TransformedEntry"
-                }
-            }
-        },
-        "main.TransformedEntry": {
+        "main.Transformed": {
             "type": "object",
             "properties": {
                 "content": {
@@ -123,8 +121,8 @@ var SwaggerInfo = &swag.Spec{
 	Host:             "localhost:5001",
 	BasePath:         "/",
 	Schemes:          []string{},
-	Title:            "Hook Service",
-	Description:      "LDAP synchronization hook for ordrd-group-x",
+	Title:            "ordrd-group-x API",
+	Description:      "Hook service for LDAP synchronization",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

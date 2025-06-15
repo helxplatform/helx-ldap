@@ -1,6 +1,27 @@
 basePath: /
 definitions:
-  main.DerivedSearch:
+  main.HookResponse:
+    properties:
+      dependencies:
+        items:
+          type: string
+        type: array
+      derived:
+        items:
+          $ref: '#/definitions/main.SearchSpec'
+        type: array
+      transformed:
+        $ref: '#/definitions/main.Transformed'
+    type: object
+  main.Payload:
+    properties:
+      content:
+        additionalProperties: true
+        type: object
+      dn:
+        type: string
+    type: object
+  main.SearchSpec:
     properties:
       baseDN:
         type: string
@@ -13,34 +34,7 @@ definitions:
       refresh:
         type: integer
     type: object
-  main.HookRequest:
-    properties:
-      content:
-        additionalProperties: true
-        description: |-
-          Attributes of the entry
-          required: true
-        type: object
-      dn:
-        description: |-
-          Distinguished Name of the LDAP entry
-          required: true
-        type: string
-    type: object
-  main.HookResponse:
-    properties:
-      dependencies:
-        items:
-          type: string
-        type: array
-      derived:
-        items:
-          $ref: '#/definitions/main.DerivedSearch'
-        type: array
-      transformed:
-        $ref: '#/definitions/main.TransformedEntry'
-    type: object
-  main.TransformedEntry:
+  main.Transformed:
     properties:
       content:
         additionalProperties: true
@@ -51,22 +45,22 @@ definitions:
 host: localhost:5001
 info:
   contact: {}
-  description: LDAP synchronization hook for ordrd-group-x
-  title: Hook Service
+  description: Hook service for LDAP synchronization
+  title: ordrd-group-x API
   version: 2.0.0
 paths:
   /hook:
     post:
       consumes:
       - application/json
-      description: Transforms LDAP entries and derives searches
+      description: Processes LDAP hook payload and transforms or derives actions
       parameters:
-      - description: Hook request
+      - description: Hook payload
         in: body
-        name: body
+        name: payload
         required: true
         schema:
-          $ref: '#/definitions/main.HookRequest'
+          $ref: '#/definitions/main.Payload'
       produces:
       - application/json
       responses:
@@ -74,5 +68,5 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/main.HookResponse'
-      summary: Process LDAP hook
+      summary: LDAP Hook
 swagger: "2.0"
