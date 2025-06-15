@@ -82,17 +82,10 @@ type LDAPResultSimple struct {
 	DN string `json:"dn"`
 }
 
-/*
-type ResultEntryFull struct {
-	DN      string                 `json:"dn"`
-	Content map[string]interface{} `json:"content"`
+type pendingItem struct {
+	entry   *LDAPResult
+	missing map[string]struct{}
 }
-
-type TransformedEntry struct {
-	DN      string                 `json:"dn"`
-	Content map[string]interface{} `json:"content"`
-}
-*/
 
 // HookResponse represents the hook response JSON.
 type HookResponse struct {
@@ -122,10 +115,13 @@ var searchResults = make(map[string]map[string]LDAPResult)
 
 // map of searchID → *SearchTask
 var searchTasks = make(map[string]*SearchTask)
+var pendingTransforms = make(map[string]*pendingItem)
+var depsIndex = make(map[string]map[string]struct{})
 
 // Mutex protecting access to searchTasks and results
 var searchTasksMutex = &sync.RWMutex{}
 var searchResultsMutex = &sync.RWMutex{}
+var pendingMutex sync.Mutex
 
 // Channels to wake the scheduler when searchTasks changes and communicate
 // interesting LDAP results
@@ -223,6 +219,34 @@ func performLDAPSearch(l *ldap.Conn, baseDN, filter string) (*ldap.SearchResult,
 	return l.Search(searchRequest)
 }
 
+// dependencySatisfied is called once an entry with `dn` has been stored.
+// It unblocks any waiting transformed objects.
+func dependencySatisfied(dn string) {
+	var ready []*LDAPResult
+
+	pendingMutex.Lock()
+	if waiters, ok := depsIndex[dn]; ok {
+		for tdn := range waiters {
+			if item, ok2 := pendingTransforms[tdn]; ok2 {
+				delete(item.missing, dn)
+				if len(item.missing) == 0 {
+					ready = append(ready, item.entry)
+					delete(pendingTransforms, tdn)
+				}
+			}
+		}
+		delete(depsIndex, dn)
+	}
+	pendingMutex.Unlock()
+
+	// Store any entries that just became ready (outside the lock).
+	for _, e := range ready {
+		if err := storeDestinationLDAP(e); err != nil {
+			logger.Error("Deferred store failed", "DN", e.DN, "Err", err)
+		}
+	}
+}
+
 func storeDestinationLDAP(entry *LDAPResult) error {
 	// Connect to destination LDAP.
 	l, err := ldap.DialURL(config.Target.URL)
@@ -237,17 +261,7 @@ func storeDestinationLDAP(entry *LDAPResult) error {
 	}
 
 	// Check if the entry exists.
-	searchRequest := ldap.NewSearchRequest(
-		entry.DN,
-		ldap.ScopeBaseObject,
-		ldap.NeverDerefAliases,
-		0,
-		0,
-		false,
-		"(objectClass=*)",
-		[]string{"dn"},
-		nil,
-	)
+	searchRequest := ldap.NewSearchRequest(entry.DN, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"dn"}, nil)
 	sr, err := l.Search(searchRequest)
 	if err != nil {
 		// Check if the error is LDAP error code 32 ("No Such Object")
@@ -288,6 +302,7 @@ func storeDestinationLDAP(entry *LDAPResult) error {
 			return err
 		}
 		logger.Info("Added entry to destination LDAP", "DN", entry.DN)
+		go dependencySatisfied(entry.DN)
 	} else {
 		// If the entry exists, update it.
 		modReq := ldap.NewModifyRequest(entry.DN, nil)
@@ -298,65 +313,10 @@ func storeDestinationLDAP(entry *LDAPResult) error {
 			return err
 		}
 		logger.Info("Modified entry in destination LDAP", "DN", entry.DN)
+		go dependencySatisfied(entry.DN)
 	}
 	return nil
 }
-
-/*
-// ldapSearchAndSync performs the LDAP search on the source server and synchronizes the results.
-func ldapSearchAndSync(id, filter, baseDN string, refresh int, oneshot bool, stopChan chan struct{}) {
-	for {
-		select {
-		case <-stopChan:
-			logger.Info("Search cancelled", "SearchId", id)
-			return
-		default:
-		}
-
-		logger.Debug("Performing LDAP search with filter", "Filter", filter, "SearchId", id, "BaseDN", baseDN)
-		l, err := connectAndBindLDAP()
-		if err != nil {
-			logger.Error("Error connecting and binding to LDAP", "Err", err)
-			select {
-			case <-stopChan:
-				return
-			case <-time.After(time.Duration(refresh) * time.Second):
-			}
-			continue
-		}
-
-		sr, err := performLDAPSearch(l, baseDN, filter)
-		if err != nil {
-			logger.Error("Error performing search", "Err", err)
-			l.Close()
-			select {
-			case <-stopChan:
-				return
-			case <-time.After(time.Duration(refresh) * time.Second):
-			}
-			continue
-		}
-		l.Close()
-
-		for _, entry := range sr.Entries {
-			processLDAPEntry(id, entry, oneshot)
-		}
-
-		// If one-shot mode is active, exit after one iteration.
-		if oneshot {
-			logger.Info("One-shot search completed", "SearchId", id)
-			return
-		}
-
-		select {
-		case <-stopChan:
-			logger.Debug("Search cancelled", "SearchId", id)
-			return
-		case <-time.After(time.Duration(refresh) * time.Second):
-		}
-	}
-}
-*/
 
 // destinationEntryExists returns true if the given DN is present
 // in the destination server.
@@ -373,15 +333,7 @@ func destinationEntryExists(dn string) bool {
 		return false
 	}
 
-	sr, err := l.Search(ldap.NewSearchRequest(
-		dn,
-		ldap.ScopeBaseObject,
-		ldap.NeverDerefAliases,
-		0, 1, false,
-		"(objectClass=*)",
-		[]string{"dn"},
-		nil,
-	))
+	sr, err := l.Search(ldap.NewSearchRequest(dn, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 1, false, "(objectClass=*)", []string{"dn"}, nil))
 	if err != nil {
 		logger.Error("Search target LDAP failed", "DN", dn, "Err", err)
 		return false
@@ -403,30 +355,53 @@ func processHookResponse(hookResp HookResponse) {
 	logger.Debug("Processing Hook response",
 		"Transformed", hookResp.Transformed,
 		"Derived", hookResp.Derived,
-		"Dependencies", hookResp.Dependencies,
-	)
+		"Dependencies", hookResp.Dependencies)
 
-	// 1) Handle the transformed entry only once its dependencies are satisfied
+	// 1) Handle transformed + dependencies
 	if hookResp.Transformed != nil {
-		// If no dependencies, store immediately; otherwise wait
-		if len(hookResp.Dependencies) == 0 || allDepsExist(hookResp.Dependencies) {
+		deps := hookResp.Dependencies
+
+		// Fast path: no deps at all
+		if len(deps) == 0 {
 			if err := storeDestinationLDAP(hookResp.Transformed); err != nil {
-				logger.Error("Error storing entry in destination LDAP",
-					"DN", hookResp.Transformed.DN, "Err", err)
+				logger.Error("Store failed", "DN", hookResp.Transformed.DN, "Err", err)
 			}
 		} else {
-			logger.Info("Deferring store; unmet dependencies",
-				"DN", hookResp.Transformed.DN,
-				"WaitingFor", hookResp.Dependencies,
-			)
-			// Optionally: you could re-queue this HookResponse for retry,
-			// or rely on the hook system to re-send once the derived entries exist.
+			// Figure out which deps are missing
+			missing := make(map[string]struct{})
+			for _, d := range deps {
+				if !destinationEntryExists(d) {
+					missing[d] = struct{}{}
+				}
+			}
+			if len(missing) == 0 {
+				// All deps already satisfied
+				if err := storeDestinationLDAP(hookResp.Transformed); err != nil {
+					logger.Error("Store failed", "DN", hookResp.Transformed.DN, "Err", err)
+				}
+			} else {
+				// Defer until deps are satisfied
+				pendingMutex.Lock()
+				pendingTransforms[hookResp.Transformed.DN] = &pendingItem{
+					entry:   hookResp.Transformed,
+					missing: missing,
+				}
+				for dep := range missing {
+					if depsIndex[dep] == nil {
+						depsIndex[dep] = make(map[string]struct{})
+					}
+					depsIndex[dep][hookResp.Transformed.DN] = struct{}{}
+				}
+				pendingMutex.Unlock()
+
+				logger.Info("Deferring store; unmet dependencies",
+					"DN", hookResp.Transformed.DN,
+					"Missing", missing)
+			}
 		}
-	} else {
-		logger.Info("No transformed payload; skipping store")
 	}
 
-	// enqueue each derived spec for the central processor
+	// 2) Forward derived searches as before
 	for _, ds := range hookResp.Derived {
 		derivedSearchCh <- ds
 	}
@@ -575,9 +550,10 @@ func runSearchScheduler(tasks map[string]*SearchTask, tasksMu *sync.RWMutex, wak
 
 // upsertSearchTask inserts or updates a task atomically.
 //
-//	– requireNotExists: if true, error if task already exists (for POST semantics)
-//	– requireExists:    if true, error if task does NOT exist (for PUT semantics)
+//   - requireNotExists – if true, error if task already exists  (POST)
+//   - requireExists    – if true, error if task does NOT exist (PUT)
 func upsertSearchTask(id, filter, baseDN string, refreshSec int, oneShot bool, requireNotExists bool, requireExists bool) error {
+
 	var nextRun time.Time
 
 	searchTasksMutex.Lock()
@@ -591,11 +567,27 @@ func upsertSearchTask(id, filter, baseDN string, refreshSec int, oneShot bool, r
 		return fmt.Errorf("search %q does not exist", id)
 	}
 
-	// Insert or overwrite the task:
-	searchTasks[id] = &SearchTask{ID: id, Filter: filter, BaseDN: baseDN, Interval: time.Duration(refreshSec) * time.Second, NextRun: nextRun, OneShot: oneShot}
+	action := "insert"
+	if exists {
+		action = "update"
+	}
+
+	// Debug log before we modify the map
+	logger.Debug("upsertSearchTask", "action", action, "id", id, "filter", filter, "baseDN", baseDN, "refreshSec", refreshSec, "oneShot", oneShot)
+
+	// Insert or overwrite the task
+	searchTasks[id] = &SearchTask{
+		ID:       id,
+		Filter:   filter,
+		BaseDN:   baseDN,
+		Interval: time.Duration(refreshSec) * time.Second,
+		NextRun:  nextRun,
+		OneShot:  oneShot,
+	}
 
 	// Wake the scheduler so it can recalc immediately
 	go func() { schedulerWakeUp <- struct{}{} }()
+
 	return nil
 }
 

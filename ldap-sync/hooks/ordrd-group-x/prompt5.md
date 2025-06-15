@@ -1,73 +1,79 @@
-# Hook Service Generation Prompt  
+# Group Processing Hook Service Generation Prompt
 ## version
 
 This is version **2.0.0**
 
-You are an experienced Go developer. Your task is to build a hook  
-service that integrates with an existing LDAP synchronization system.  
-The hook service must be implemented in Go using the Echo framework,  
-and include OpenAPI documentation via swaggo (ensure that the annotations  
+IMPORTANT: You are delivering production-ready code. You must fully
+implement code for the examples. No placeholder logic or TODOs: every
+branch of the switch must compile and produce exactly the JSON shown
+in each example case.
+
+You are an experienced Go developer. Your task is to build a hook
+service that integrates with an existing LDAP synchronization system.
+The hook service must be implemented in Go using the Echo framework,
+and include OpenAPI documentation via swaggo (ensure that the annotations
 are valid and parsable by swaggo).
 
-The hook service will be called by the main LDAP system whenever it  
-detects a new or changed LDAP entry. It should expose a `POST /hook`  
+The hook service will be called by the main LDAP system whenever it
+detects a new or changed LDAP entry. It should expose a `POST /hook`
 endpoint that accepts a JSON payload containing only two fields:
 
-- **`dn`**: a string representing the distinguished name (DN) of the  
-  LDAP entry.  
-- **`content`**: a JSON object representing the LDAP attributes of the  
+- **`dn`**: a string representing the distinguished name (DN) of the
+  LDAP entry.
+- **`content`**: a JSON object representing the LDAP attributes of the
   entry. Single-valued attributes are strings; multi-valued are arrays.
 
 ### Payload Processing
 
-1. **Transformation**  
-   Apply specialized transformation logic to the incoming payload.  
-   (Variable expressions are indicated by `{{}}`—ask clarifying  
-   questions if the examples are insufficient). If the input doesn't
-   correspond to any example, return null for transformed, and zero-length
-   derived and dependencies
+1. **Transformation**
+   Apply specialized transformation logic to the incoming payload.
+   Variable expressions are indicated by `{{}}`—ask clarifying
+   questions if the examples are insufficient. If the input doesn't
+   correspond to any example, return `null` for `transformed`, and
+   zero-length `derived` and `dependencies`. **You must fully implement**
+   the transformation logic for *all* example object types. **Do not**
+   leave any placeholder comments or “TODO” sections—every branch must
+   be concrete Go code that reproduces the exact example behavior.
 
-2. **Object‐Type Dispatch**  
-   Inspect the payload to determine its object type. There may be  
-   several types; each type can trigger different logic. If the payload  
-   is unrecognized, log or skip accordingly. Clearly mark where custom  
-   handlers can be injected.
+2. **Object‐Type Dispatch**
+   Inspect the payload to determine its object type. Each type can
+   trigger different logic. If the payload is unrecognized, log or
+   skip accordingly. Clearly mark where custom handlers can be injected.
 
-3. **New Search Definitions**  
-   Decide whether this entry should spawn additional LDAP searches.  
-   Populate the `"derived"` list accordingly.
+3. **New Search Definitions**
+   Decide whether this entry should spawn additional LDAP searches.
+   Populate the `"derived"` list accordingly. All filter values in
+   your derived specs **must** be constructed per RFC 4515—that is,
+   code should never produce an invalid filter.
 
 4. **Response Contract**
    Your handler must return a JSON object with three keys:
    ```jsonc
    {
-     "transformed":  { ... }, // MAY be null if you truly have no change
+     "transformed":  { ... }, // MAY be null if there is no change
      "derived":      [ ... ], // zero or more search specs
-     "dependencies": [ ... ]  // zero or more destination‑LDAP DNs
+     "dependencies": [ ... ]  // zero or more destination DNs
    }
    ```
-   - **`transformed`** — the final DN + attribute map that should be
-     written to the **destination** LDAP. Do **not** suppress this
-     object when dependencies are present; simply include it.
+   - **`transformed`** — the final DN + attribute map to write to
+     the destination LDAP.
    - **`derived`** — array of search specs, each with
-     `id`, `filter`, `refresh`, `baseDN`, `oneshot`.
-   - **`dependencies`** — list of destination‑LDAP DNs that **must
-     exist** *before* the sync system is allowed to write `transformed`.
-     The hook does **not** decide when these DNs exist; it merely
-     declares them. The sync engine holds the response until all
-     dependencies are satisfied.
+     `id`, `filter`, `refresh`, `baseDN`, and `oneshot`.
+   - **`dependencies`** — list of destination DNs that **must**
+     exist before writing `transformed`.
 
-5. **Processing Summary**: The hook service should output a summary of the
-   conversion (the "transformed" and "derived" elements, as well as the
-   dependency list) for debugging purposes. This summary should also be
-   included in a README file along with instructions for how to customize
-   the transformation logic and object‑type handlers.
+5. **Processing Summary**
+   Output a summary of the conversion (`transformed`, `derived`, and
+   `dependencies`) for debugging. Include this summary in a README with
+   instructions for customizing the transformation logic and object‑type
+   handlers.
 
 ---
 
 ## Examples
 
-There a 2 types of input to expect and are described by Example1 and Example2
+There a 3 types of input to expect and are described by Example1, Example2
+and Example3
 
 ### Example1 (ORDRD Group)
 
@@ -83,7 +89,8 @@ hook code should maintain and update the ordrd group transformation.
 ##### Case 1 
 
 If any uids can not be found in the map, then set content as described
-in case 1 output below.
+in case 1 output below.  Extract the pid from the result of the query
+to populate the map and synthesize the dervied list.
 
 ##### Case 2
 

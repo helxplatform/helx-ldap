@@ -13,11 +13,6 @@ definitions:
       refresh:
         type: integer
     type: object
-  main.ErrorResponse:
-    properties:
-      message:
-        type: string
-    type: object
   main.HookRequest:
     properties:
       content:
@@ -105,11 +100,11 @@ paths:
     post:
       consumes:
       - application/json
-      description: Transform LDAP entries, derive searches, declare dependencies
+      description: Transforms LDAP entries and derives searches
       parameters:
-      - description: Hook payload
+      - description: Hook request
         in: body
-        name: hook
+        name: body
         required: true
         schema:
           $ref: '#/definitions/main.HookRequest'
@@ -120,10 +115,6 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/main.HookResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/main.ErrorResponse'
       summary: Process LDAP hook
   /loglevel:
     get:

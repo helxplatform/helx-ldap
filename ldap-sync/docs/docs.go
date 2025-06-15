@@ -40,7 +40,7 @@ const docTemplate = `{
         },
         "/hook": {
             "post": {
-                "description": "Transform LDAP entries, derive searches, declare dependencies",
+                "description": "Transforms LDAP entries and derives searches",
                 "consumes": [
                     "application/json"
                 ],
@@ -50,8 +50,8 @@ const docTemplate = `{
                 "summary": "Process LDAP hook",
                 "parameters": [
                     {
-                        "description": "Hook payload",
-                        "name": "hook",
+                        "description": "Hook request",
+                        "name": "body",
                         "in": "body",
                         "required": true,
                         "schema": {
@@ -64,12 +64,6 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/main.HookResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/main.ErrorResponse"
                         }
                     }
                 }
@@ -424,14 +418,6 @@ const docTemplate = `{
                 },
                 "refresh": {
                     "type": "integer"
-                }
-            }
-        },
-        "main.ErrorResponse": {
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string"
                 }
             }
         },

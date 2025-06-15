@@ -1,9 +1,17 @@
 basePath: /
 definitions:
-  main.ErrorResponse:
+  main.DerivedSearch:
     properties:
-      message:
+      baseDN:
         type: string
+      filter:
+        type: string
+      id:
+        type: string
+      oneshot:
+        type: boolean
+      refresh:
+        type: integer
     type: object
   main.HookRequest:
     properties:
@@ -27,23 +35,10 @@ definitions:
         type: array
       derived:
         items:
-          $ref: '#/definitions/main.SearchSpec'
+          $ref: '#/definitions/main.DerivedSearch'
         type: array
       transformed:
         $ref: '#/definitions/main.TransformedEntry'
-    type: object
-  main.SearchSpec:
-    properties:
-      baseDN:
-        type: string
-      filter:
-        type: string
-      id:
-        type: string
-      oneshot:
-        type: boolean
-      refresh:
-        type: integer
     type: object
   main.TransformedEntry:
     properties:
@@ -64,11 +59,11 @@ paths:
     post:
       consumes:
       - application/json
-      description: Transform LDAP entries, derive searches, declare dependencies
+      description: Transforms LDAP entries and derives searches
       parameters:
-      - description: Hook payload
+      - description: Hook request
         in: body
-        name: hook
+        name: body
         required: true
         schema:
           $ref: '#/definitions/main.HookRequest'
@@ -79,9 +74,5 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/main.HookResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/main.ErrorResponse'
       summary: Process LDAP hook
 swagger: "2.0"

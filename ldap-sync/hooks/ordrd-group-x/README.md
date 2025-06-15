@@ -1,38 +1,38 @@
-ordrd-group-x Hook Service README
-=================================
+<!-- README.md -->
 
-This service receives LDAP hook payloads at POST /hook and produces:
-- transformed: final entry (DN + attributes) for destination LDAP
-- derived:    additional LDAP searches (id, filter, refresh, baseDN, oneshot)
-- dependencies: DNs that must exist before writing transformed entry
+ordrd-group-x Hook Service (v2.0.0)
 
-Usage
------
-1. Generate docs and build binary:
-   make build
-2. Run with optional baseGid flag:
-   ./ordrd-group-x --baseGid=200
-3. Send a hook payload:
-   curl -X POST http://localhost:5001/hook \
-     -H "Content-Type: application/json" \
-     -d @payload.json
+This service transforms LDAP entries into a target directory,
+generates derived searches, and tracks dependencies.
+
+Conversion summary
+------------------
+- **transformed**: the new DN and attributes to write, or null if
+  unchanged
+- **derived**: LDAP search specs (`id`, `filter`, `refresh`,
+  `baseDN`, `oneshot`) for fetching related entries
+- **dependencies**: DNs that must exist before writing `transformed`
 
 Customization
 -------------
-- In main.go, edit processHook(): replace or extend 
-  // Example1, // Example2, // Example3 blocks.
-- Add new object-type handlers for other entry types.
-- Modify SearchSpec or HookResponse schemas as needed.
-- Adjust flag defaults (e.g. baseGid) in init().
+1. Open **main.go**, locate the `hookHandler` function.
+2. Each `if` block handles one object type (ORDRD group, UNC user,
+   Posix group). To add new types, inject additional branches
+   following that pattern.
+3. Modify transformation logic directly under each case: build
+   `TransformedObject`, `Derived`, and `Dependencies`.
+4. For filter correctness, filters are constructed to follow RFC 4515.
 
-Extending
----------
-- Add DN and filter validation in hookHandler.
-- Enhance logging or integrate metrics collection.
-- Add TLS or authentication middleware.
+Further suggestions
+-------------------
+- Integrate a full RFC 4515 filter-validator in place of the simple
+  string checks.
+- Add middleware for authentication or logging as needed.
+- Adjust `baseGid` default via the `-baseGid` flag on startup.
+- Extend `SearchSpec` with pagination or size limits if required.
 
-Questions & Suggestions
------------------------
-- Need support for conditional derived searches?
-- Sample unit tests for each handler?
-- Configurable refresh intervals in derived searches?
+Questions?
+----------
+- Need to support more object classes?
+- Want dynamic baseDN or refresh intervals?
+- Let me know any other use cases to cover.

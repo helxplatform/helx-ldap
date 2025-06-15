@@ -2,7 +2,9 @@ package main
 
 import (
 	"flag"
+	"log"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -15,6 +17,23 @@ import (
 // @host            localhost:5001
 // @BasePath        /
 
+var (
+	pidUidMap = make(map[string]string)
+	baseGid   string
+)
+
+func init() {
+	flag.StringVar(&baseGid, "baseGid", "1000", "base gid for new users")
+}
+
+func main() {
+	flag.Parse()
+	e := echo.New()
+	e.Use(middleware.Logger())
+	e.POST("/hook", hookHandler)
+	log.Fatal(e.Start(":5001"))
+}
+
 // HookRequest is the incoming payload.
 // swagger:model
 type HookRequest struct {
@@ -26,9 +45,9 @@ type HookRequest struct {
 	Content map[string]interface{} `json:"content"`
 }
 
-// SearchSpec defines an LDAP search to derive.
+// DerivedSearch represents a derived search definition.
 // swagger:model
-type SearchSpec struct {
+type DerivedSearch struct {
 	ID      string `json:"id"`
 	Filter  string `json:"filter"`
 	Refresh int    `json:"refresh"`
@@ -36,169 +55,214 @@ type SearchSpec struct {
 	Oneshot bool   `json:"oneshot"`
 }
 
-// TransformedEntry is the object to write.
+// TransformedEntry represents the transformed entry.
 // swagger:model
 type TransformedEntry struct {
 	DN      string                 `json:"dn"`
 	Content map[string]interface{} `json:"content"`
 }
 
-// HookResponse is the outgoing payload.
+// HookResponse is the JSON response.
 // swagger:model
 type HookResponse struct {
 	Transformed  *TransformedEntry `json:"transformed"`
-	Derived      []SearchSpec      `json:"derived"`
+	Derived      []DerivedSearch   `json:"derived"`
 	Dependencies []string          `json:"dependencies"`
 }
 
-// ErrorResponse for bad requests.
-type ErrorResponse struct {
-	Message string `json:"message"`
-}
-
-var (
-	pidUidMap = make(map[string]string)
-	baseGid   string
-)
-
-func init() {
-	flag.StringVar(&baseGid, "baseGid", "1000", "Base GID for all users")
-}
-
-func main() {
-	flag.Parse()
-	e := echo.New()
-	e.Use(middleware.Logger())
-	e.POST("/hook", hookHandler)
-	e.Logger.Fatal(e.Start(":5001"))
-}
-
-// hookHandler processes /hook requests.
+// hookHandler handles the /hook endpoint.
 // @Summary      Process LDAP hook
-// @Description  Transform LDAP entries, derive searches, declare dependencies
+// @Description  Transforms LDAP entries and derives searches
 // @Accept       json
 // @Produce      json
-// @Param        hook  body      HookRequest  true  "Hook payload"
-// @Success      200   {object}  HookResponse
-// @Failure      400   {object}  ErrorResponse
+// @Param        body body HookRequest true "Hook request"
+// @Success      200 {object} HookResponse
 // @Router       /hook [post]
 func hookHandler(c echo.Context) error {
 	var req HookRequest
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid JSON"})
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
-	if req.DN == "" {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "dn is required"})
+	if !validateDN(req.DN) {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid DN"})
 	}
 
 	resp := processHook(req)
+	for _, ds := range resp.Derived {
+		if !validateFilter(ds.Filter) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid filter: " + ds.Filter})
+		}
+	}
 	return c.JSON(http.StatusOK, resp)
 }
 
-// processHook contains sample logic; replace with your own handlers.
 func processHook(req HookRequest) HookResponse {
-	var (
-		transformed  *TransformedEntry
-		derived      []SearchSpec
-		dependencies []string
-	)
-
-	oc, _ := req.Content["objectClass"].([]interface{})
-
-	// Example2: UNC User (pid=...)
+	// Example1: ORDRD Group
+	if strings.HasPrefix(req.DN, "cn=unc:app:renci:ordrd:") {
+		return processExample1(req)
+	}
+	// Example2: UNC User
 	if strings.HasPrefix(req.DN, "pid=") {
-		uid := req.Content["uid"].(string)
-		pid := req.Content["pid"].(string)
-		// populate pidUidMap
-		pidUidMap[pid] = uid
-
-		transformed = &TransformedEntry{
-			DN: "uid=" + uid + ",ou=users,dc=example,dc=org",
-			Content: map[string]interface{}{
-				"cn":            req.Content["cn"],
-				"displayName":   req.Content["displayName"],
-				"gidNumber":     baseGid,
-				"givenName":     req.Content["givenName"],
-				"homeDirectory": "/home/" + uid,
-				"objectClass":   []string{"top", "inetOrgPerson", "posixAccount", "helxUser"},
-				"ou":            "users",
-				"sn":            req.Content["sn"],
-				"uid":           uid,
-				"uidNumber":     req.Content["uidNumber"],
-			},
-		}
-		derived = []SearchSpec{{
-			ID:      req.Content["uidNumber"].(string) + "-posixGroups",
-			Filter:  "(&(objectClass=posixGroup)(memberUid=" + req.Content["uidNumber"].(string) + "))",
-			Refresh: 10,
-			BaseDN:  "dc=unc,dc=edu",
-			Oneshot: false,
-		}}
-		return HookResponse{transformed, derived, nil}
+		return processExample2(req)
 	}
-
-	// Example3: posixGroup
-	for _, v := range oc {
-		if v == "posixGroup" {
-			transformed = &TransformedEntry{
-				DN: "cn=" + req.Content["cn"].(string) + ",ou=groups,dc=example,dc=org",
-				Content: map[string]interface{}{
-					"cn":          req.Content["cn"],
-					"description": req.Content["description"],
-					"gidNumber":   req.Content["gidNumber"],
-					"memberuid":   req.Content["memberuid"],
-					"objectClass": []string{"posixGroup"},
-				},
-			}
-			return HookResponse{transformed, nil, nil}
-		}
-	}
-
-	// Example1: ordrd group
-	if strings.Contains(req.DN, "ou=Groups") {
-		memberIface, _ := req.Content["member"].([]interface{})
-		var pids []string
-		for _, m := range memberIface {
-			parts := strings.Split(m.(string), ",")[0] // pid=...
-			pids = append(pids, parts)
-		}
-		// if any missing, derive lookup
-		missing := false
-		for _, pid := range pids {
-			if _, ok := pidUidMap[strings.TrimPrefix(pid, "pid=")]; !ok {
-				missing = true
-				break
+	// Example3: Posix Group
+	if ocs, ok := req.Content["objectClass"].([]interface{}); ok {
+		for _, oc := range ocs {
+			if s, ok := oc.(string); ok && s == "posixGroup" {
+				return processExample3(req)
 			}
 		}
-		if missing {
-			derived = []SearchSpec{{
-				ID:      "ordrd-members",
-				Filter:  "(|" + strings.Join(pids, ")(") + ")",
+	}
+	// Unrecognized
+	log.Printf("Unrecognized entry type for DN: %s", req.DN)
+	return HookResponse{Transformed: nil, Derived: nil, Dependencies: nil}
+}
+
+func processExample1(req HookRequest) HookResponse {
+	re := regexp.MustCompile(`^cn=unc:app:renci:ordrd:([^:]+):([^,]+)`)
+	parts := re.FindStringSubmatch(req.DN)
+	if len(parts) != 3 {
+		return HookResponse{Transformed: nil, Derived: nil, Dependencies: nil}
+	}
+	deployment, groupname := parts[1], parts[2]
+	members, ok := toStringSlice(req.Content["member"])
+	if !ok {
+		return HookResponse{Transformed: nil, Derived: nil, Dependencies: nil}
+	}
+	missing := []string{}
+	for _, m := range members {
+		pid := extractPID(m)
+		if _, exists := pidUidMap[pid]; !exists {
+			missing = append(missing, pid)
+		}
+	}
+	// Case1: spawn a search
+	if len(missing) > 0 {
+		return HookResponse{
+			Transformed: nil,
+			Derived: []DerivedSearch{{
+				ID:      "ordrd-" + deployment + "-" + groupname + "-members",
+				Filter:  buildOrFilter("pid", missing),
 				Refresh: 10,
 				BaseDN:  "ou=people,dc=unc,dc=edu",
 				Oneshot: false,
-			}}
-			return HookResponse{nil, derived, nil}
+			}},
+			Dependencies: nil,
 		}
-		// all present: transform
-		var members []string
-		for _, pid := range pids {
-			uid := pidUidMap[strings.TrimPrefix(pid, "pid=")]
-			uidDN := "uid=" + uid + ",ou=users,dc=example,dc=org"
-			members = append(members, uidDN)
-			dependencies = append(dependencies, uidDN)
-		}
-		transformed = &TransformedEntry{
-			DN: "cn={{ groupname }},ou=groups,dc=example,dc=org",
-			Content: map[string]interface{}{
-				"cn":          "{{ groupname }}",
-				"member":      members,
-				"objectClass": []string{"top", "groupOfNames"},
-			},
-		}
-		return HookResponse{transformed, nil, dependencies}
 	}
+	// Case2: all pids found
+	newMembers, deps := []string{}, []string{}
+	for _, m := range members {
+		pid := extractPID(m)
+		uid := pidUidMap[pid]
+		dn := "uid=" + uid + ",ou=users,dc=example,dc=org"
+		newMembers = append(newMembers, dn)
+		deps = append(deps, dn)
+	}
+	trans := &TransformedEntry{
+		DN: "cn=" + groupname + ",ou=groups,dc=example,dc=org",
+		Content: map[string]interface{}{
+			"cn":          groupname,
+			"member":      newMembers,
+			"objectClass": []string{"top", "groupOfNames"},
+		},
+	}
+	return HookResponse{Transformed: trans, Derived: nil, Dependencies: deps}
+}
 
-	// Unrecognized: no-op
-	return HookResponse{nil, nil, nil}
+func processExample2(req HookRequest) HookResponse {
+	pid, _ := req.Content["pid"].(string)
+	uid, _ := req.Content["uid"].(string)
+	pidUidMap[pid] = uid
+
+	trans := &TransformedEntry{
+		DN: "uid=" + uid + ",ou=users,dc=example,dc=org",
+		Content: map[string]interface{}{
+			"cn":            req.Content["cn"],
+			"displayName":   req.Content["displayName"],
+			"gidNumber":     baseGid,
+			"givenName":     req.Content["givenName"],
+			"homeDirectory": "/home/" + uid,
+			"objectClass":   []string{"top", "inetOrgPerson", "posixAccount", "helxUser"},
+			"ou":            "users",
+			"sn":            req.Content["sn"],
+			"uid":           uid,
+			"uidNumber":     req.Content["uidNumber"],
+		},
+	}
+	uidNum, _ := req.Content["uidNumber"].(string)
+	return HookResponse{
+		Transformed: trans,
+		Derived: []DerivedSearch{{
+			ID:      uidNum + "-posixGroups",
+			Filter:  "(&(objectClass=posixGroup)(memberUid=" + uidNum + "))",
+			Refresh: 10,
+			BaseDN:  "dc=unc,dc=edu",
+			Oneshot: false,
+		}},
+		Dependencies: nil,
+	}
+}
+
+func processExample3(req HookRequest) HookResponse {
+	cn, _ := req.Content["cn"].(string)
+	trans := &TransformedEntry{
+		DN: "cn=" + cn + ",ou=groups,dc=example,dc=org",
+		Content: map[string]interface{}{
+			"cn":          cn,
+			"description": req.Content["description"],
+			"gidNumber":   req.Content["gidNumber"],
+			"memberuid":   req.Content["memberuid"],
+			"objectClass": []string{"posixGroup"},
+		},
+	}
+	return HookResponse{Transformed: trans, Derived: nil, Dependencies: nil}
+}
+
+func toStringSlice(v interface{}) ([]string, bool) {
+	raw, ok := v.([]interface{})
+	if !ok {
+		return nil, false
+	}
+	out := make([]string, len(raw))
+	for i, e := range raw {
+		out[i], _ = e.(string)
+	}
+	return out, true
+}
+
+func extractPID(dn string) string {
+	parts := strings.SplitN(dn, ",", 2)
+	return strings.TrimPrefix(parts[0], "pid=")
+}
+
+func buildOrFilter(key string, vals []string) string {
+	var sb strings.Builder
+	sb.WriteString("(|")
+	for _, v := range vals {
+		sb.WriteString("(" + key + "=" + v + ")")
+	}
+	sb.WriteString(")")
+	return sb.String()
+}
+
+// validateFilter ensures parentheses are balanced.
+func validateFilter(f string) bool {
+	open := 0
+	for _, c := range f {
+		if c == '(' {
+			open++
+		} else if c == ')' {
+			open--
+			if open < 0 {
+				return false
+			}
+		}
+	}
+	return open == 0
+}
+
+// validateDN performs a basic sanity check on the DN.
+func validateDN(dn string) bool {
+	return strings.Contains(dn, "=")
 }
