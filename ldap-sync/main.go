@@ -429,13 +429,16 @@ func sendHooks(result LDAPResult) {
 				return
 			}
 
-			var hookResp HookResponse
+			var envelopes []HookResponse
 
-			if err := json.Unmarshal(body, &hookResp); err != nil {
-				logger.Error("Error unmarshalling hook response", "URL", hookURL, "Err", err)
+			if err := json.Unmarshal(body, &envelopes); err != nil {
+				logger.Error("Hook response decode failed",
+					"URL", hookURL, "Err", err)
 				return
 			}
-			processHookResponse(hookResp)
+			for _, hr := range envelopes {
+				processHookResponse(hr)
+			}
 		}(url)
 	}
 }

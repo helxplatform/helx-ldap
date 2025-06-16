@@ -1,4 +1,3 @@
-// main.go
 package main
 
 import (
@@ -6,270 +5,274 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+
+	_ "main/docs"
 
 	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
+	echoSwagger "github.com/swaggo/echo-swagger"
 )
 
-// @title ordrd-group-x API
-// @version 2.0.0
-// @description Hook service for LDAP synchronization
-// @host localhost:5001
-// @BasePath /
-
+// Global state
 var (
-	baseGid     string
-	pidUidMap   map[string]string
-	groupPidMap map[string]GroupRecord
+	baseGid      int
+	pidUidMap    = make(map[string]string)
+	groupMembers = make(map[string][]string)
+	mu           sync.Mutex
 )
 
-// Payload is the incoming hook payload.
-type Payload struct {
+// HookRequest is the incoming payload
+type HookRequest struct {
+	DN      string                 `json:"dn" binding:"required"`
+	Content map[string]interface{} `json:"content" binding:"required"`
+}
+
+// Entry is a transformed LDAP entry
+type Entry struct {
 	DN      string                 `json:"dn"`
 	Content map[string]interface{} `json:"content"`
 }
 
-// Transformed is the object to write to destination LDAP.
-type Transformed struct {
-	DN      string                 `json:"dn"`
-	Content map[string]interface{} `json:"content"`
-}
-
-// SearchSpec defines a derived search.
+// SearchSpec defines a derived search
 type SearchSpec struct {
 	ID      string `json:"id"`
 	Filter  string `json:"filter"`
 	Refresh int    `json:"refresh"`
 	BaseDN  string `json:"baseDN"`
-	Oneshot bool   `json:"oneshot"`
+	OneShot bool   `json:"oneshot"`
 }
 
-// HookResponse is what we return to the caller.
+// HookResponse envelope
 type HookResponse struct {
-	Transformed  *Transformed `json:"transformed"`
+	Transformed  *Entry       `json:"transformed"`
 	Derived      []SearchSpec `json:"derived"`
 	Dependencies []string     `json:"dependencies"`
 }
 
-// GroupRecord holds state for deferred group creation.
-type GroupRecord struct {
-	Deployment string
-	GroupName  string
-	PIDs       []string
-}
-
-// @Summary LDAP Hook
-// @Description Processes LDAP hook payload and transforms or derives actions
-// @Accept json
-// @Produce json
-// @Param payload body Payload true "Hook payload"
-// @Success 200 {object} HookResponse
-// @Router /hook [post]
-func hookHandler(c echo.Context) error {
-	var p Payload
-	if err := c.Bind(&p); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid payload"})
-	}
-	resp := processPayload(p)
-	return c.JSON(http.StatusOK, resp)
-}
-
+// @title ordrd-group-x Hook Service API
+// @version 2.0.0
+// @description Processes LDAP hook payloads and emits transformed, derived, and dependency data.
+// @host localhost:5001
+// @BasePath /
 func main() {
-	var port int
-	flag.StringVar(&baseGid, "baseGid", "", "Base GID to assign in user transforms")
-	flag.IntVar(&port, "port", 5001, "Port to listen on")
+	flag.IntVar(&baseGid, "baseGid", 0, "base GID for Type III output")
 	flag.Parse()
 
-	pidUidMap = make(map[string]string)
-	groupPidMap = make(map[string]GroupRecord)
-
 	e := echo.New()
+	e.Use(middleware.Logger(), middleware.Recover())
+
 	e.POST("/hook", hookHandler)
-	e.Logger.Fatal(e.Start(fmt.Sprintf(":%d", port)))
+	e.GET("/swagger/*", echoSwagger.WrapHandler)
+
+	e.Logger.Fatal(e.Start(":5001"))
 }
 
-func processPayload(p Payload) HookResponse {
-	switch {
-	case isType1(p):
-		return handleType1(p)
-	case isType2(p):
-		return handleType2(p)
-	case isType3(p):
-		return handleType3(p)
-	default:
-		// Unrecognized
-		return HookResponse{Transformed: nil, Derived: nil, Dependencies: nil}
+// hookHandler processes incoming hook requests
+// @Summary Process LDAP hook
+// @Description Transform LDAP entries and generate derived searches + dependencies
+// @Accept json
+// @Produce json
+// @Param payload body HookRequest true "Hook payload"
+// @Success 200 {array} HookResponse
+// @Router /hook [post]
+func hookHandler(c echo.Context) error {
+	var req HookRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, err.Error())
 	}
+
+	responses := processHook(req)
+	return c.JSON(http.StatusOK, responses)
 }
 
-func isType1(p Payload) bool {
-	cls, ok := p.Content["objectClass"].([]interface{})
+func processHook(req HookRequest) []HookResponse {
+	mu.Lock()
+	defer mu.Unlock()
+
+	var out []HookResponse
+	content := req.Content
+
+	// Detect Type1: UNC Group
+	if isType1(content) {
+		// parse deployment & groupname from cn
+		cn := content["cn"].(string)
+		parts := strings.Split(cn, ":")
+		depl, grp := parts[4], parts[5]
+		// collect pids
+		rawMembers := content["member"].([]interface{})
+		var pids []string
+		for _, m := range rawMembers {
+			s := m.(string)
+			sub := strings.Split(s, ",")[0]
+			pid := strings.TrimPrefix(sub, "pid=")
+			pids = append(pids, pid)
+			if _, ok := pidUidMap[pid]; !ok {
+				pidUidMap[pid] = "" // placeholder
+			}
+		}
+		groupMembers[grp] = pids
+
+		// Type I output
+		filter := "(|"
+		for _, pid := range pids {
+			filter += fmt.Sprintf("(pid=%s)", pid)
+		}
+		filter += ")"
+		out = append(out, HookResponse{
+			Transformed: nil,
+			Derived: []SearchSpec{{
+				ID:      fmt.Sprintf("ordrd-%s-%s-members", depl, grp),
+				Filter:  filter,
+				Refresh: 10,
+				BaseDN:  "ou=people,dc=unc,dc=edu",
+				OneShot: false,
+			}},
+			Dependencies: []string{},
+		})
+
+		// Type II (if all uids known)
+		if allMapped := allHaveUIDs(pids); allMapped {
+			memberDNs := []string{}
+			for _, pid := range pids {
+				uid := pidUidMap[pid]
+				memberDNs = append(memberDNs,
+					fmt.Sprintf("uid=%s,ou=users,dc=example,dc=org", uid))
+			}
+			out = append(out, HookResponse{
+				Transformed: &Entry{
+					DN: fmt.Sprintf("cn=%s,ou=groups,dc=example,dc=org", grp),
+					Content: map[string]interface{}{
+						"cn":          grp,
+						"member":      memberDNs,
+						"objectClass": []string{"top", "groupOfNames"},
+					},
+				},
+				Derived:      []SearchSpec{},
+				Dependencies: memberDNs,
+			})
+		}
+	}
+
+	// Detect Type2: UNC User
+	if isType2(content) {
+		pid := content["pid"].(string)
+		uid := content["uid"].(string)
+		pidUidMap[pid] = uid
+
+		// Type II for any groups now ready
+		for grp, pids := range groupMembers {
+			if allHaveUIDs(pids) {
+				memberDNs := []string{}
+				for _, pid := range pids {
+					uid := pidUidMap[pid]
+					memberDNs = append(memberDNs,
+						fmt.Sprintf("uid=%s,ou=users,dc=example,dc=org", uid))
+				}
+				out = append(out, HookResponse{
+					Transformed: &Entry{
+						DN: fmt.Sprintf("cn=%s,ou=groups,dc=example,dc=org", grp),
+						Content: map[string]interface{}{
+							"cn":          grp,
+							"member":      memberDNs,
+							"objectClass": []string{"top", "groupOfNames"},
+						},
+					},
+					Derived:      []SearchSpec{},
+					Dependencies: memberDNs,
+				})
+			}
+		}
+
+		// Type III output
+		uidNum := content["uidNumber"].(string)
+		out = append(out, HookResponse{
+			Transformed: &Entry{
+				DN: fmt.Sprintf("uid=%s,ou=users,dc=example,dc=org", uid),
+				Content: map[string]interface{}{
+					"cn":            content["cn"],
+					"displayName":   content["displayName"],
+					"gidNumber":     fmt.Sprintf("%d", baseGid),
+					"givenName":     content["givenName"],
+					"homeDirectory": fmt.Sprintf("/home/%s", uid),
+					"objectClass":   []string{"top", "inetOrgPerson", "posixAccount", "helxUser"},
+					"ou":            "users",
+					"sn":            content["sn"],
+					"uid":           uid,
+					"uidNumber":     uidNum,
+				},
+			},
+			Derived: []SearchSpec{{
+				ID:      fmt.Sprintf("%s-posixGroups", uidNum),
+				Filter:  fmt.Sprintf("(&(objectClass=posixGroup)(memberUid=%s))", uidNum),
+				Refresh: 10,
+				BaseDN:  "dc=unc,dc=edu",
+				OneShot: false,
+			}},
+			Dependencies: []string{},
+		})
+	}
+
+	// Detect Type3: Posix group
+	if isType3(content) {
+		cn := content["cn"].(string)
+		out = append(out, HookResponse{
+			Transformed: &Entry{
+				DN: fmt.Sprintf("cn=%s,ou=groups,dc=example,dc=org", cn),
+				Content: map[string]interface{}{
+					"cn":          cn,
+					"description": content["description"],
+					"gidNumber":   content["gidNumber"],
+					"memberuid":   content["memberuid"],
+					"objectClass": []string{"posixGroup"},
+				},
+			},
+			Derived:      []SearchSpec{},
+			Dependencies: []string{},
+		})
+	}
+
+	return out
+}
+
+func isType1(c map[string]interface{}) bool {
+	ocs, ok := c["objectClass"].([]interface{})
 	if !ok {
 		return false
 	}
-	foundGroup, foundUNC := false, false
-	for _, v := range cls {
-		if s, ok := v.(string); ok {
-			if s == "groupOfNames" {
-				foundGroup = true
-			}
-			if s == "UNCGroup" {
-				foundUNC = true
-			}
+	for _, v := range ocs {
+		if v == "UNCGroup" {
+			_, hasMember := c["member"]
+			return hasMember
 		}
 	}
-	return foundGroup && foundUNC
+	return false
 }
 
-func handleType1(p Payload) HookResponse {
-	cnRaw, _ := p.Content["cn"].(string)
-	const prefix = "unc:app:renci:ordrd:"
-	if !strings.HasPrefix(cnRaw, prefix) {
-		return HookResponse{Transformed: nil, Derived: nil, Dependencies: nil}
-	}
-	rest := strings.TrimPrefix(cnRaw, prefix)
-	parts := strings.SplitN(rest, ":", 2)
-	if len(parts) != 2 {
-		return HookResponse{Transformed: nil, Derived: nil, Dependencies: nil}
-	}
-	deployment, groupname := parts[0], parts[1]
-
-	var pids []string
-	if members, ok := p.Content["member"].([]interface{}); ok {
-		for _, m := range members {
-			if ms, ok := m.(string); ok && strings.HasPrefix(ms, "pid=") {
-				if comma := strings.Index(ms, ","); comma > 0 {
-					pids = append(pids, ms[len("pid="):comma])
-				}
-			}
-		}
-	}
-
-	// keep for Type II
-	key := fmt.Sprintf("%s:%s", deployment, groupname)
-	groupPidMap[key] = GroupRecord{Deployment: deployment, GroupName: groupname, PIDs: pids}
-
-	// build derived search
-	filter := "(|"
-	for _, pid := range pids {
-		filter += fmt.Sprintf("(pid=%s)", pid)
-	}
-	filter += ")"
-
-	spec := SearchSpec{
-		ID:      fmt.Sprintf("ordrd-%s-%s-members", deployment, groupname),
-		Filter:  filter,
-		Refresh: 10,
-		BaseDN:  "ou=people,dc=unc,dc=edu",
-		Oneshot: false,
-	}
-	return HookResponse{Transformed: nil, Derived: []SearchSpec{spec}, Dependencies: nil}
+func isType2(c map[string]interface{}) bool {
+	_, hasPid := c["pid"]
+	_, hasUid := c["uid"]
+	return hasPid && hasUid
 }
 
-func isType2(p Payload) bool {
-	if _, ok := p.Content["pid"]; !ok {
+func isType3(c map[string]interface{}) bool {
+	ocs, ok := c["objectClass"].([]interface{})
+	if !ok {
 		return false
 	}
-	if cls, ok := p.Content["objectClass"].([]interface{}); ok {
-		for _, v := range cls {
-			if s, ok := v.(string); ok && s == "posixAccount" {
-				return true
-			}
+	for _, v := range ocs {
+		if v == "posixGroup" {
+			return true
 		}
 	}
 	return false
 }
 
-func handleType2(p Payload) HookResponse {
-	pid, _ := p.Content["pid"].(string)
-	uid, _ := p.Content["uid"].(string)
-	pidUidMap[pid] = uid
-
-	// build user transform
-	newDN := fmt.Sprintf("uid=%s,ou=users,dc=example,dc=org", uid)
-	newContent := map[string]interface{}{
-		"cn":            p.Content["cn"],
-		"displayName":   p.Content["displayName"],
-		"gidNumber":     baseGid,
-		"givenName":     p.Content["givenName"],
-		"homeDirectory": fmt.Sprintf("/home/%s", uid),
-		"objectClass":   []string{"top", "inetOrgPerson", "posixAccount", "helxUser"},
-		"ou":            "users",
-		"sn":            p.Content["sn"],
-		"uid":           uid,
-		"uidNumber":     p.Content["uidNumber"],
-	}
-	uidNum := fmt.Sprintf("%v", p.Content["uidNumber"])
-	spec := SearchSpec{
-		ID:      fmt.Sprintf("%s-posixGroups", uidNum),
-		Filter:  fmt.Sprintf("(&(objectClass=posixGroup)(memberUid=%s))", uidNum),
-		Refresh: 10,
-		BaseDN:  "dc=unc,dc=edu",
-		Oneshot: false,
-	}
-	// check for any ready groups
-	for k, gr := range groupPidMap {
-		ready := true
-		for _, pidVal := range gr.PIDs {
-			if mapped, ok := pidUidMap[pidVal]; !ok || mapped == "" {
-				ready = false
-				break
-			}
-		}
-		if ready {
-			// emit Type II
-			groupDN := fmt.Sprintf("cn=%s,ou=groups,dc=example,dc=org", gr.GroupName)
-			members := make([]string, 0, len(gr.PIDs))
-			deps := make([]string, 0, len(gr.PIDs))
-			for _, pidVal := range gr.PIDs {
-				u := pidUidMap[pidVal]
-				dn := fmt.Sprintf("uid=%s,ou=users,dc=example,dc=org", u)
-				members = append(members, dn)
-				deps = append(deps, dn)
-			}
-			delete(groupPidMap, k)
-			return HookResponse{
-				Transformed: &Transformed{DN: groupDN, Content: map[string]interface{}{
-					"cn":          gr.GroupName,
-					"member":      members,
-					"objectClass": []string{"top", "groupOfNames"},
-				}},
-				Derived:      nil,
-				Dependencies: deps,
-			}
+func allHaveUIDs(pids []string) bool {
+	for _, pid := range pids {
+		if pidUidMap[pid] == "" {
+			return false
 		}
 	}
-	// else return user transform
-	return HookResponse{
-		Transformed:  &Transformed{DN: newDN, Content: newContent},
-		Derived:      []SearchSpec{spec},
-		Dependencies: nil,
-	}
-}
-
-func isType3(p Payload) bool {
-	if cls, ok := p.Content["objectClass"].([]interface{}); ok {
-		for _, v := range cls {
-			if s, ok := v.(string); ok && s == "posixGroup" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func handleType3(p Payload) HookResponse {
-	cn, _ := p.Content["cn"].(string)
-	newDN := fmt.Sprintf("cn=%s,ou=groups,dc=example,dc=org", cn)
-	newContent := map[string]interface{}{
-		"cn":          cn,
-		"description": p.Content["description"],
-		"gidNumber":   p.Content["gidNumber"],
-		"memberuid":   p.Content["memberuid"],
-		"objectClass": []string{"posixGroup"},
-	}
-	return HookResponse{
-		Transformed:  &Transformed{DN: newDN, Content: newContent},
-		Derived:      nil,
-		Dependencies: nil,
-	}
+	return true
 }

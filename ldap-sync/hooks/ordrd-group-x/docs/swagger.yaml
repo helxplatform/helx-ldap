@@ -1,5 +1,24 @@
 basePath: /
 definitions:
+  main.Entry:
+    properties:
+      content:
+        additionalProperties: true
+        type: object
+      dn:
+        type: string
+    type: object
+  main.HookRequest:
+    properties:
+      content:
+        additionalProperties: true
+        type: object
+      dn:
+        type: string
+    required:
+    - content
+    - dn
+    type: object
   main.HookResponse:
     properties:
       dependencies:
@@ -11,15 +30,7 @@ definitions:
           $ref: '#/definitions/main.SearchSpec'
         type: array
       transformed:
-        $ref: '#/definitions/main.Transformed'
-    type: object
-  main.Payload:
-    properties:
-      content:
-        additionalProperties: true
-        type: object
-      dn:
-        type: string
+        $ref: '#/definitions/main.Entry'
     type: object
   main.SearchSpec:
     properties:
@@ -34,39 +45,34 @@ definitions:
       refresh:
         type: integer
     type: object
-  main.Transformed:
-    properties:
-      content:
-        additionalProperties: true
-        type: object
-      dn:
-        type: string
-    type: object
 host: localhost:5001
 info:
   contact: {}
-  description: Hook service for LDAP synchronization
-  title: ordrd-group-x API
+  description: Processes LDAP hook payloads and emits transformed, derived, and dependency
+    data.
+  title: ordrd-group-x Hook Service API
   version: 2.0.0
 paths:
   /hook:
     post:
       consumes:
       - application/json
-      description: Processes LDAP hook payload and transforms or derives actions
+      description: Transform LDAP entries and generate derived searches + dependencies
       parameters:
       - description: Hook payload
         in: body
         name: payload
         required: true
         schema:
-          $ref: '#/definitions/main.Payload'
+          $ref: '#/definitions/main.HookRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/main.HookResponse'
-      summary: LDAP Hook
+            items:
+              $ref: '#/definitions/main.HookResponse'
+            type: array
+      summary: Process LDAP hook
 swagger: "2.0"

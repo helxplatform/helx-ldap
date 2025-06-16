@@ -17,15 +17,12 @@ definitions:
     properties:
       content:
         additionalProperties: true
-        description: |-
-          Attributes of the entry
-          required: true
         type: object
       dn:
-        description: |-
-          Distinguished Name of the LDAP entry
-          required: true
         type: string
+    required:
+    - content
+    - dn
     type: object
   main.HookResponse:
     properties:
@@ -100,11 +97,11 @@ paths:
     post:
       consumes:
       - application/json
-      description: Transforms LDAP entries and derives searches
+      description: Transform LDAP entries and generate derived searches + dependencies
       parameters:
-      - description: Hook request
+      - description: Hook payload
         in: body
-        name: body
+        name: payload
         required: true
         schema:
           $ref: '#/definitions/main.HookRequest'
@@ -114,7 +111,9 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/main.HookResponse'
+            items:
+              $ref: '#/definitions/main.HookResponse'
+            type: array
       summary: Process LDAP hook
   /loglevel:
     get:

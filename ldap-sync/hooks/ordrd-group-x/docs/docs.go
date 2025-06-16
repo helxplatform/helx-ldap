@@ -17,14 +17,14 @@ const docTemplate = `{
     "paths": {
         "/hook": {
             "post": {
-                "description": "Processes LDAP hook payload and transforms or derives actions",
+                "description": "Transform LDAP entries and generate derived searches + dependencies",
                 "consumes": [
                     "application/json"
                 ],
                 "produces": [
                     "application/json"
                 ],
-                "summary": "LDAP Hook",
+                "summary": "Process LDAP hook",
                 "parameters": [
                     {
                         "description": "Hook payload",
@@ -32,7 +32,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/main.Payload"
+                            "$ref": "#/definitions/main.HookRequest"
                         }
                     }
                 ],
@@ -40,7 +40,10 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/main.HookResponse"
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/main.HookResponse"
+                            }
                         }
                     }
                 }
@@ -48,6 +51,34 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "main.Entry": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "dn": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.HookRequest": {
+            "type": "object",
+            "required": [
+                "content",
+                "dn"
+            ],
+            "properties": {
+                "content": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "dn": {
+                    "type": "string"
+                }
+            }
+        },
         "main.HookResponse": {
             "type": "object",
             "properties": {
@@ -64,19 +95,7 @@ const docTemplate = `{
                     }
                 },
                 "transformed": {
-                    "$ref": "#/definitions/main.Transformed"
-                }
-            }
-        },
-        "main.Payload": {
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "object",
-                    "additionalProperties": true
-                },
-                "dn": {
-                    "type": "string"
+                    "$ref": "#/definitions/main.Entry"
                 }
             }
         },
@@ -99,18 +118,6 @@ const docTemplate = `{
                     "type": "integer"
                 }
             }
-        },
-        "main.Transformed": {
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "object",
-                    "additionalProperties": true
-                },
-                "dn": {
-                    "type": "string"
-                }
-            }
         }
     }
 }`
@@ -121,8 +128,8 @@ var SwaggerInfo = &swag.Spec{
 	Host:             "localhost:5001",
 	BasePath:         "/",
 	Schemes:          []string{},
-	Title:            "ordrd-group-x API",
-	Description:      "Hook service for LDAP synchronization",
+	Title:            "ordrd-group-x Hook Service API",
+	Description:      "Processes LDAP hook payloads and emits transformed, derived, and dependency data.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

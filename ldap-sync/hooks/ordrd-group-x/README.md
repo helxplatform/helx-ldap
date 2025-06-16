@@ -1,64 +1,55 @@
-# README.md
+# ordrd-group-x Hook Service
 
-ordrd-group-x Hook Service
-===========================
+Version: 2.1.0  
+Port: 5001  
 
-This service integrates with an existing LDAP sync system. It listens on
-port 5001 and processes incoming LDAP entries, producing transformations
-and/or derived search specs based on object type.
+This service receives LDAP hook payloads (`POST /hook`) and emits
+one or more envelopes containing:
 
-Conversion Process
-------------------
+- **transformed**: the entry (DN + content) to write (or `null`)
+- **derived**: LDAP search specs for additional lookups
+- **dependencies**: destination DNs that must exist first
 
-1. **Type I (UNC Group)**
-   - **Transformed**: `null`
-   - **Derived**: search spec to fetch group members
-   - **Dependencies**: _none_
+## How It Works
 
-2. **Type II (Group Creation)**
-   - **Transformed**: group-of-names under
-     `ou=groups,dc=example,dc=org`
-   - **Derived**: _none_
-   - **Dependencies**: DNs of all user entries
+1. **Type I (UNC Group)**  
+   - Detects group entries by `objectClass: UNCGroup`.  
+   - Emits a derived search to fetch all `pid=` members.  
+   - Records `pid` → empty-UID placeholders.
 
-3. **Type III (UNC User)**
-   - **Transformed**: user entry under
-     `ou=users,dc=example,dc=org`
-   - **Derived**: search spec for posix groups
-   - **Dependencies**: _none_
+2. **Type II (Group after UIDs)**  
+   - Once all recorded `pid`s have real UIDs, emits a
+     transformed group at `ou=groups,dc=example,dc=org`  
+   - Dependencies ensure each `uid=…` exists first.
 
-4. **Type IV (Posix Group)**
-   - **Transformed**: posix group under
-     `ou=groups,dc=example,dc=org`
-   - **Derived**: _none_
-   - **Dependencies**: _none_
+3. **Type III (UNC User)**  
+   - Detects user entries by presence of `pid` and `uid`.  
+   - Updates global `pidUidMap`.  
+   - Emits a transformed `helxUser` under `ou=users,dc=example,dc=org`.  
+   - Emits a derived search for posixGroups via `(memberUid=…)`.
 
-Customizing Transformation Logic
---------------------------------
+4. **Type IV (Posix Group)**  
+   - Copies posixGroup entries into `ou=groups,dc=example,dc=org`.  
+   - Preserves only `cn`, `description`, `gidNumber`, and `memberuid`.
 
-The core handlers live in `main.go`:
+## Customization
 
-- `handleType1` → UNC Group
-- `handleType2` → UNC User (and triggers Type II when ready)
-- `handleType3` → Posix Group
+- **Transformation Logic**  
+  Modify or extend `isType1`, `isType2`, `isType3` in `main.go` to
+  match new object criteria.  
+- **Handlers**  
+  Add new branches in `processHook` for additional “TypeN” cases.  
+- **Flags**  
+  - `--baseGid`: sets `gidNumber` for Type III outputs.
 
-To extend:
+## Building & Running
 
-1. Add an `isTypeX` predicate for your new payload shape.
-2. Write a `handleTypeX` function mirroring existing patterns.
-3. Insert it in `processPayload` above the default case.
+```sh
+# generate/update Swagger docs
+make docs
 
-Flags
------
+# build image (defaults to linux/amd64)
+make build
 
-- `-baseGid string`  
-  Base GID for user `gidNumber` in Type III transforms.
-- `-port int` (default: 5001)  
-  Listening port.
-
-Next Steps
-----------
-
-- Adjust `groupPidMap` logic for concurrent groups if needed.
-- Validate all filters and DNs per RFC 4515 to prevent injection.
-- Expand error handling/logging as your use case requires.
+# push to registry
+make push
