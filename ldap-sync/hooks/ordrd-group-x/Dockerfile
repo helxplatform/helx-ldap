@@ -8,4 +8,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o ordrd-group-x main.go
 # Final stage
 FROM ubuntu:20.04
 WORKDIR /app
+COPY --from=builder /app/ordrd-group-x .
 RUN apt-get update && apt-get upgrade -y
+EXPOSE 5001
+ENTRYPOINT ["./ordrd-group-x"]
