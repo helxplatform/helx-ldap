@@ -96,9 +96,17 @@ func processHook(req HookRequest) []HookResponse {
 	// Detect Type1: UNC Group
 	if isType1(content) {
 		// parse deployment & groupname from cn
-		cn := content["cn"].(string)
-		parts := strings.Split(cn, ":")
-		depl, grp := parts[4], parts[5]
+		cnRaw, ok := content["cn"].(string)
+		if !ok {
+			return out // malformed payload – cn is not a string
+		}
+		parts := strings.Split(cnRaw, ":")
+		if len(parts) < 2 { // need at least deployment + group
+			return out // or log error and skip
+		}
+
+		// always take the last two elements so prefix length can vary
+		depl, grp := parts[len(parts)-2], parts[len(parts)-1]
 		// collect pids
 		rawMembers := content["member"].([]interface{})
 		var pids []string

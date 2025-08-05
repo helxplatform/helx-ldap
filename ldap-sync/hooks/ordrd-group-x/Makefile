@@ -1,5 +1,5 @@
 REPO ?= containers.renci.org/helxplatform/ordrd-group-x
-TAG ?= v2.1.0
+TAG ?= v2.2.0
 PLATFORM ?= linux/amd64
 
 .PHONY: docs build push
