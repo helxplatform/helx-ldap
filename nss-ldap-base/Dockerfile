@@ -1,0 +1,40 @@
+FROM ubuntu:25.04 AS build
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates \
+    build-essential pkg-config \
+    autoconf automake libtool \
+    libldap2-dev libsasl2-dev libkrb5-dev \
+    dpkg-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN git clone --depth=1 https://github.com/PADL/nss_ldap.git
+WORKDIR /src/nss_ldap
+
+RUN sed -i '/#include <gssapi\/gssapi.h>/a #include <gssapi/gssapi_krb5.h>' ldap-nss.c
+RUN sed -i 's/const char \*filterEntryDN/char *filterEntryDN/' ldap-grp.c
+
+RUN set -eux; \
+    multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"; \
+    autoreconf -fi; \
+    ./configure --prefix=/usr --libdir="/usr/lib/$multiarch"; \
+    make -j"$(nproc)"; \
+    mkdir -p "/out/usr/lib/$multiarch"; \
+    cp nss_ldap.so "/out/usr/lib/$multiarch/libnss_ldap.so.2"
+
+FROM ubuntu:25.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libldap2 libsasl2-2 libkrb5-3 dpkg-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /out/usr/lib/ /usr/lib/
+
+RUN set -eux; \
+    multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"; \
+    ln -sf "/usr/lib/$multiarch/libnss_ldap.so.2" "/usr/lib/$multiarch/libnss_ldap.so"
